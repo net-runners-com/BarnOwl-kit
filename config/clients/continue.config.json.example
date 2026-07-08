@@ -1,0 +1,18 @@
+{
+  "models": [
+    {
+      "title": "Claude Sonnet (BarnOwl)",
+      "provider": "openai",
+      "model": "sonnet",
+      "apiBase": "http://localhost:11435/v1",
+      "apiKey": "unused"
+    },
+    {
+      "title": "Claude Opus (BarnOwl)",
+      "provider": "openai",
+      "model": "opus",
+      "apiBase": "http://localhost:11435/v1",
+      "apiKey": "unused"
+    }
+  ]
+}

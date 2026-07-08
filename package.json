@@ -1,0 +1,37 @@
+{
+  "name": "barnowl",
+  "version": "0.1.0",
+  "description": "Fast OpenAI-compatible local Claude server. Wraps otterly and disables per-request MCP startup so responses return in ~6s instead of ~37s.",
+  "keywords": [
+    "claude",
+    "openai-compatible",
+    "llm",
+    "proxy",
+    "otterly",
+    "cursor",
+    "local"
+  ],
+  "license": "MIT",
+  "type": "commonjs",
+  "bin": {
+    "barnowl": "bin/barnowl.js"
+  },
+  "files": [
+    "bin",
+    "lib",
+    "config",
+    "README.md"
+  ],
+  "scripts": {
+    "postinstall": "node lib/patch-otterly.js",
+    "start": "node bin/barnowl.js start",
+    "stop": "node bin/barnowl.js stop",
+    "verify": "node bin/barnowl.js verify"
+  },
+  "dependencies": {
+    "otterly": "^0.8.0"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

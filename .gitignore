@@ -1,0 +1,7 @@
+node_modules/
+*.log
+.barnowl.pid
+.DS_Store
+
+# MCP profiles are user-local (may contain private URLs/keys) — never commit them
+config/mcp/*.json

@@ -1,0 +1,62 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "BarnOwl 経由で利用可能な Claude モデル一覧。リクエストの model フィールドに指定する。",
+  "defaultModel": "sonnet",
+  "models": [
+    {
+      "id": "sonnet",
+      "label": "Sonnet（推奨・日常利用）",
+      "aliases": ["default"],
+      "contextWindow": 200000,
+      "recommendedFor": ["chat", "coding", "cursor"]
+    },
+    {
+      "id": "opus",
+      "label": "Opus（高難度・推論）",
+      "contextWindow": 200000,
+      "recommendedFor": ["complex-reasoning", "architecture"]
+    },
+    {
+      "id": "haiku",
+      "label": "Haiku（最速・軽量）",
+      "contextWindow": 200000,
+      "recommendedFor": ["quick-tasks", "summaries"]
+    },
+    {
+      "id": "claude-sonnet-4-6",
+      "label": "Claude Sonnet 4.6",
+      "contextWindow": 200000,
+      "recommendedFor": ["coding"]
+    },
+    {
+      "id": "claude-opus-4-8",
+      "label": "Claude Opus 4.8",
+      "contextWindow": 200000,
+      "recommendedFor": ["complex-tasks"]
+    },
+    {
+      "id": "claude-sonnet-5",
+      "label": "Claude Sonnet 5",
+      "contextWindow": 200000,
+      "recommendedFor": ["latest-sonnet"]
+    },
+    {
+      "id": "claude-fable-5",
+      "label": "Claude Fable 5",
+      "contextWindow": 200000,
+      "recommendedFor": ["claude-5-family"]
+    },
+    {
+      "id": "default",
+      "label": "Claude Code デフォルト",
+      "contextWindow": 200000,
+      "recommendedFor": ["fallback"]
+    }
+  ],
+  "deprecatedIds": [
+    "claude-sonnet-4-20250514",
+    "claude-opus-4-20250514",
+    "claude-3-5-haiku-20241022"
+  ],
+  "deprecatedNote": "/v1/models に表示されるが、Claude CLI が拒否することがある。上記 id または aliases を使うこと。"
+}
