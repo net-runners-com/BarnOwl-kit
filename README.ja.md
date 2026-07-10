@@ -80,6 +80,33 @@ curl http://localhost:11435/v1/chat/completions \
   -d '{"model":"sonnet","messages":[{"role":"user","content":"hi"}]}'
 ```
 
+## セッション（会話の継続）
+
+リクエストはデフォルトでステートレスです — 毎回新しい会話として処理されます。
+会話をまたいで継続するには:
+
+1. 普通にリクエストを送る。レスポンスにセッション ID が入ります
+   （ボディの `session_id` と `X-Session-Id` ヘッダー。ストリーミング時は
+   最後のチャンクに `session_id`）。
+2. 次のターンでその ID を渡す — ボディに `"session_id": "<id>"` または
+   `X-Session-Id` ヘッダー — と、文脈を保ったまま会話が再開されます。
+
+```bash
+# ターン1 — レスポンスの session_id を控える
+curl -s http://localhost:11435/v1/chat/completions -H "Content-Type: application/json" \
+  -d '{"model":"sonnet","messages":[{"role":"user","content":"私の名前はヒロです。"}]}'
+
+# ターン2 — セッションを再開
+curl -s http://localhost:11435/v1/chat/completions -H "Content-Type: application/json" \
+  -d '{"model":"sonnet","session_id":"<ターン1のid>","messages":[{"role":"user","content":"私の名前は？"}]}'
+```
+
+- `session_id` を省略すれば毎回新規セッションになります。
+- function-calling リクエスト（`tools` 配列あり）は常にステートレスです —
+  そのタイプのクライアントは履歴を `messages` に自分で持つためです。
+- セッションが保持するのは会話であってウォームなプロセスではありません:
+  各ターンで claude は新規起動されるため、リクエスト単体のレイテンシは変わりません。
+
 ## 設定（設定ファイル）
 
 一度書いておけばフラグなしで起動できます。優先順位:

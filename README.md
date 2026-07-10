@@ -80,6 +80,33 @@ curl http://localhost:11435/v1/chat/completions \
   -d '{"model":"sonnet","messages":[{"role":"user","content":"hi"}]}'
 ```
 
+## Sessions (conversation continuity)
+
+Requests are stateless by default — each one starts a fresh conversation. To
+continue a conversation across requests:
+
+1. Send a normal request. The response carries the session id in the body
+   (`session_id`) and the `X-Session-Id` header; when streaming, the final
+   chunk carries `session_id`.
+2. Pass that id on the next turn — `"session_id": "<id>"` in the body or an
+   `X-Session-Id` header — and the conversation resumes with full context.
+
+```bash
+# turn 1 — note the session_id in the response
+curl -s http://localhost:11435/v1/chat/completions -H "Content-Type: application/json" \
+  -d '{"model":"sonnet","messages":[{"role":"user","content":"My name is Hiro."}]}'
+
+# turn 2 — resume it
+curl -s http://localhost:11435/v1/chat/completions -H "Content-Type: application/json" \
+  -d '{"model":"sonnet","session_id":"<id from turn 1>","messages":[{"role":"user","content":"What is my name?"}]}'
+```
+
+- Omitting `session_id` starts a new session every time.
+- Function-calling requests (with a `tools` array) are always stateless —
+  those clients carry their own history in `messages`.
+- Sessions persist the conversation, not a warm process: each turn still
+  starts claude fresh, so per-request latency is unchanged.
+
 ## Configuration (config file)
 
 Declare everything once and start with no flags. Resolution:
