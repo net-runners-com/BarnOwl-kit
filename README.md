@@ -113,6 +113,9 @@ curl -s http://localhost:11435/v1/chat/completions -H "Content-Type: application
   turn transparently falls back to `claude --resume` — context is never lost.
   Set `BARNOWL_WARM_SESSIONS=off` to disable the pool.
 
+**Full guide — [docs/sessions.md](docs/sessions.md):** warm-pool mechanics,
+lifecycle & fallback semantics, configuration, and troubleshooting.
+
 ## Configuration (config file)
 
 Declare everything once and start with no flags. Resolution:

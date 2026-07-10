@@ -113,6 +113,9 @@ curl -s http://localhost:11435/v1/chat/completions -H "Content-Type: application
   `claude --resume` にフォールバックするため文脈は失われません。
   `BARNOWL_WARM_SESSIONS=off` でプール無効化。
 
+**詳細ガイド — [docs/sessions.md](docs/sessions.md):** ウォームプールの仕組み、
+ライフサイクルとフォールバックの挙動、設定、トラブルシューティング。
+
 ## 設定（設定ファイル）
 
 一度書いておけばフラグなしで起動できます。優先順位:
