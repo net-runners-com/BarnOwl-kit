@@ -17,6 +17,6 @@ Profile format (standard `mcpServers` map, same as Claude Code):
 ```
 
 `*.json` in this directory is **gitignored** — profiles often contain private
-URLs, tokens, or machine-specific paths. See [docs/mcp.md](../../docs/mcp.md)
+URLs, tokens, or machine-specific paths. See the main [README](../../README.md)
 for the full guide (including how to migrate servers you already registered
 in Claude Code).
