@@ -226,7 +226,7 @@ async function cmdStart(argv) {
   await sleep(1500);
   if (isAlive(child.pid)) {
     console.log(`Started (PID ${child.pid})`);
-    console.log(`  Model names: sonnet | opus | haiku`);
+    console.log(`  Model names: sonnet | opus | haiku | fable`);
     return 0;
   }
   console.error(`Failed to start. Check the log: ${LOG_FILE}`);
@@ -381,6 +381,7 @@ function cmdModels() {
   console.log("  sonnet   — everyday / coding (default)");
   console.log("  opus     — hardest reasoning");
   console.log("  haiku    — fastest / lightweight");
+  console.log("  fable    — most capable (Claude 5 family)");
   if (models.length) {
     console.log("\nAll ids in config/models.json:");
     for (const m of models) console.log("  " + m.id + (m.label ? "  — " + m.label : ""));
@@ -410,7 +411,7 @@ function cmdHelp() {
   Client setup:
     Base URL : http://localhost:11435/v1
     API key  : any string (auth disabled unless BARNOWL_API_KEY is set)
-    Models   : sonnet | opus | haiku
+    Models   : sonnet | opus | haiku | fable
 
   Env: BARNOWL_PORT, BARNOWL_WORK_DIR, BARNOWL_API_KEY,
        BARNOWL_QUEUE_TIMEOUT, BARNOWL_MAX_CONCURRENT, BARNOWL_MAX_QUEUE, BARNOWL_RATE_LIMIT

@@ -5,7 +5,7 @@
 Fast, OpenAI-compatible **local Claude server**.
 
 Point Cursor, Aider, Continue, or any OpenAI SDK at it and use `sonnet` /
-`opus` / `haiku`.
+`opus` / `haiku` / `fable`.
 
 ## Install
 
@@ -72,7 +72,7 @@ server-side through `--mcp`.
 | -------- | ---------------------------- |
 | Base URL | `http://localhost:11435/v1`  |
 | API key  | any string (auth off unless `BARNOWL_API_KEY` is set) |
-| Models   | `sonnet` · `opus` · `haiku`  |
+| Models   | `sonnet` · `opus` · `haiku` · `fable` |
 
 ```bash
 curl http://localhost:11435/v1/chat/completions \

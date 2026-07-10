@@ -23,6 +23,13 @@
       "recommendedFor": ["quick-tasks", "summaries"]
     },
     {
+      "id": "fable",
+      "label": "Fable（最高性能・Claude 5 ファミリー）",
+      "aliases": ["claude-fable-5"],
+      "contextWindow": 200000,
+      "recommendedFor": ["hardest-reasoning", "frontier"]
+    },
+    {
       "id": "claude-sonnet-4-6",
       "label": "Claude Sonnet 4.6",
       "contextWindow": 200000,
@@ -39,12 +46,6 @@
       "label": "Claude Sonnet 5",
       "contextWindow": 200000,
       "recommendedFor": ["latest-sonnet"]
-    },
-    {
-      "id": "claude-fable-5",
-      "label": "Claude Fable 5",
-      "contextWindow": 200000,
-      "recommendedFor": ["claude-5-family"]
     },
     {
       "id": "default",
