@@ -104,8 +104,14 @@ curl -s http://localhost:11435/v1/chat/completions -H "Content-Type: application
 - Omitting `session_id` starts a new session every time.
 - Function-calling requests (with a `tools` array) are always stateless —
   those clients carry their own history in `messages`.
-- Sessions persist the conversation, not a warm process: each turn still
-  starts claude fresh, so per-request latency is unchanged.
+- Session turns are served by a **warm process pool**: the first turn on a
+  session starts a live `claude` process (resumed with full context), and
+  later turns reuse it — skipping process startup entirely (measured ~1.8-2.5s
+  per warm turn vs ~4-8s cold). Idle sessions are reaped after
+  `BARNOWL_SESSION_IDLE` seconds (default 600), at most `BARNOWL_MAX_SESSIONS`
+  live processes are kept (default 8, LRU-evicted), and after a reap the next
+  turn transparently falls back to `claude --resume` — context is never lost.
+  Set `BARNOWL_WARM_SESSIONS=off` to disable the pool.
 
 ## Configuration (config file)
 
@@ -145,6 +151,9 @@ barnowl config         # show the effective config + which file was used
 | `BARNOWL_MAX_CONCURRENT`  | `5`       | Max concurrent requests         |
 | `BARNOWL_MAX_QUEUE`       | `50`      | Max queued requests             |
 | `BARNOWL_RATE_LIMIT`      | `60`      | Requests/min per client         |
+| `BARNOWL_SESSION_IDLE`    | `600`     | Warm session idle reap (seconds) |
+| `BARNOWL_MAX_SESSIONS`    | `8`       | Max live session processes      |
+| `BARNOWL_WARM_SESSIONS`   | (on)      | `off` disables the warm pool    |
 
 State (PID + log) lives in `~/.barnowl/`.
 
