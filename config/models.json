@@ -52,8 +52,46 @@
       "label": "Claude Code デフォルト",
       "contextWindow": 200000,
       "recommendedFor": ["fallback"]
+    },
+    {
+      "id": "codex",
+      "label": "OpenAI Codex（既定 gpt-5.6-terra・ChatGPTログイン）",
+      "aliases": ["gpt-5.6-terra"],
+      "engine": "codex",
+      "provider": "openai",
+      "contextWindow": 272000,
+      "recommendedFor": ["coding", "openai"]
+    },
+    {
+      "id": "gpt-5.6-terra",
+      "label": "Codex gpt-5.6-terra（バランス・日常のエージェント作業）",
+      "engine": "codex",
+      "provider": "openai",
+      "contextWindow": 272000,
+      "recommendedFor": ["coding"]
+    },
+    {
+      "id": "gpt-5.5",
+      "label": "Codex gpt-5.5（フロンティア・高難度）",
+      "engine": "codex",
+      "provider": "openai",
+      "contextWindow": 272000,
+      "recommendedFor": ["complex-reasoning"]
+    },
+    {
+      "id": "gpt-5.4-mini",
+      "label": "Codex gpt-5.4-mini（小型・最速・低コスト）",
+      "engine": "codex",
+      "provider": "openai",
+      "contextWindow": 272000,
+      "recommendedFor": ["simple-tasks"]
     }
   ],
+  "effortLevels": {
+    "codex": ["minimal", "low", "medium", "high"],
+    "claude": ["low", "medium", "high", "xhigh", "max"],
+    "howToSet": "リクエストの reasoning_effort フィールド、または model に ':<effort>' を付与（例: 'gpt-5.5:high', 'sonnet:high'）"
+  },
   "deprecatedIds": [
     "claude-sonnet-4-20250514",
     "claude-opus-4-20250514",
