@@ -112,9 +112,12 @@
     }
   ],
   "effortLevels": {
-    "codex": ["minimal", "low", "medium", "high"],
+    "codex-gpt5.6+": ["none", "low", "medium", "high", "xhigh"],
+    "codex-legacy": ["minimal", "low", "medium", "high"],
     "claude": ["low", "medium", "high", "xhigh", "max"],
-    "howToSet": "リクエストの reasoning_effort フィールド、または model に ':<effort>' を付与（例: 'gpt-5.5:high', 'sonnet:high'）"
+    "howToSet": "リクエストの reasoning_effort フィールド、または model に ':<effort>' を付与（例: 'gpt-5.5:high', 'sonnet:high'）。モデル世代に合わせて自動クランプされる",
+    "verbosity": "Codex 系のみ: リクエストの verbosity フィールド（low|medium|high）が -c model_verbosity に渡る",
+    "samplingParams": "temperature / top_p / stop は Claude 系のみ実際に効く（CLAUDE_CODE_EXTRA_BODY 注入・thinking 自動オフ）。Codex 系はバックエンドが拒否するため無視"
   },
   "deprecatedIds": [
     "claude-sonnet-4-20250514",
