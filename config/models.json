@@ -55,16 +55,32 @@
     },
     {
       "id": "codex",
-      "label": "OpenAI Codex（既定 gpt-5.6-terra・ChatGPTログイン）",
-      "aliases": ["gpt-5.6-terra"],
+      "label": "OpenAI Codex（既定 gpt-5.6-sol・ChatGPTログイン）",
+      "aliases": ["gpt-5.6-sol"],
       "engine": "codex",
       "provider": "openai",
       "contextWindow": 272000,
       "recommendedFor": ["coding", "openai"]
     },
     {
+      "id": "gpt-5.6-sol",
+      "label": "Codex gpt-5.6-sol（Codex CLI 既定）",
+      "engine": "codex",
+      "provider": "openai",
+      "contextWindow": 272000,
+      "recommendedFor": ["coding"]
+    },
+    {
       "id": "gpt-5.6-terra",
       "label": "Codex gpt-5.6-terra（バランス・日常のエージェント作業）",
+      "engine": "codex",
+      "provider": "openai",
+      "contextWindow": 272000,
+      "recommendedFor": ["coding"]
+    },
+    {
+      "id": "gpt-5.6-luna",
+      "label": "Codex gpt-5.6-luna",
       "engine": "codex",
       "provider": "openai",
       "contextWindow": 272000,
@@ -77,6 +93,14 @@
       "provider": "openai",
       "contextWindow": 272000,
       "recommendedFor": ["complex-reasoning"]
+    },
+    {
+      "id": "gpt-5.4",
+      "label": "Codex gpt-5.4",
+      "engine": "codex",
+      "provider": "openai",
+      "contextWindow": 272000,
+      "recommendedFor": ["coding"]
     },
     {
       "id": "gpt-5.4-mini",
