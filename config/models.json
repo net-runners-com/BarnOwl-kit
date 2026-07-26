@@ -48,6 +48,18 @@
       "recommendedFor": ["latest-sonnet"]
     },
     {
+      "id": "claude-opus-5",
+      "label": "Claude Opus 5（最新 Opus）",
+      "contextWindow": 200000,
+      "recommendedFor": ["latest-opus", "complex-reasoning"]
+    },
+    {
+      "id": "claude-opus-5[1m]",
+      "label": "Claude Opus 5（1M コンテキスト）",
+      "contextWindow": 1000000,
+      "recommendedFor": ["long-context", "complex-reasoning"]
+    },
+    {
       "id": "default",
       "label": "Claude Code デフォルト",
       "contextWindow": 200000,

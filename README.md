@@ -53,10 +53,15 @@ Two engine families behind one endpoint — routing is automatic by model id
 
 | Family | Model ids | Auth |
 | --- | --- | --- |
-| Claude | `sonnet` (default) · `opus` · `haiku` · `fable` · `claude-sonnet-5` · `claude-opus-4-8` · `claude-sonnet-4-6` | Claude Code login |
+| Claude | `sonnet` (default) · `opus` · `haiku` · `fable` · `claude-opus-5` · `claude-opus-5[1m]` (1M context) · `claude-sonnet-5` · `claude-opus-4-8` · `claude-sonnet-4-6` | Claude Code login |
 | Codex | `codex` (CLI default) · `gpt-5.6-sol` · `gpt-5.6-terra` · `gpt-5.6-luna` · `gpt-5.5` · `gpt-5.4` · `gpt-5.4-mini` | ChatGPT login (`codex login`) |
 
-`barnowl models` lists them; `GET /v1/models` serves them to clients.
+`claude-opus-5[1m]` is Opus 5 with a 1M-token context window — same id you
+pass to the `claude` CLI, brackets included.
+
+`barnowl models` lists every id in `config/models.json`. `GET /v1/models`
+advertises the discovery subset (legacy Claude ids + all Codex ids); ids that
+are not advertised still work — the id is passed through to the CLI verbatim.
 
 **Reasoning effort** — append `:<effort>` to any model id, or send the
 OpenAI `reasoning_effort` field:

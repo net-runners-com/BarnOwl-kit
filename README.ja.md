@@ -53,10 +53,15 @@ curl http://localhost:11435/v1/chat/completions \
 
 | ファミリー | モデル ID | 認証 |
 | --- | --- | --- |
-| Claude | `sonnet`（デフォルト）· `opus` · `haiku` · `fable` · `claude-sonnet-5` · `claude-opus-4-8` · `claude-sonnet-4-6` | Claude Code ログイン |
+| Claude | `sonnet`（デフォルト）· `opus` · `haiku` · `fable` · `claude-opus-5` · `claude-opus-5[1m]`（1M コンテキスト）· `claude-sonnet-5` · `claude-opus-4-8` · `claude-sonnet-4-6` | Claude Code ログイン |
 | Codex | `codex`（CLI 既定）· `gpt-5.6-sol` · `gpt-5.6-terra` · `gpt-5.6-luna` · `gpt-5.5` · `gpt-5.4` · `gpt-5.4-mini` | ChatGPT ログイン（`codex login`） |
 
-一覧は `barnowl models` または `GET /v1/models` で確認できます。
+`claude-opus-5[1m]` は Opus 5 の 1M トークンコンテキスト版です。角括弧込みで
+そのまま `claude` CLI に渡る ID なので、この表記のまま指定してください。
+
+`barnowl models` は `config/models.json` の全 ID を表示します。`GET /v1/models`
+が広告するのはディスカバリ用のサブセット（旧 Claude ID + Codex 系すべて）で、
+そこに載っていない ID もそのまま CLI に渡るため問題なく利用できます。
 
 **推論 effort** — モデル ID に `:<effort>` を付けるか、OpenAI の
 `reasoning_effort` フィールドで指定:
