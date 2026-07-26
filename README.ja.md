@@ -2,10 +2,12 @@
 
 [English README → README.md](README.md)
 
-高速な OpenAI 互換の**ローカル Claude サーバー**。
+高速な OpenAI 互換の**ローカル Claude + Codex サーバー**。
 
 Cursor・Aider・Continue や任意の OpenAI SDK を向けるだけで、`sonnet` /
-`opus` / `haiku` / `fable` が使えます。
+`opus` / `haiku` / `fable` に加え、ChatGPT ログイン経由の `gpt-5.6-sol`
+などが使えます。Codex 系モデルは**画像生成**（`/v1/images/generations`）
+にも対応。
 
 ## インストール
 
@@ -14,6 +16,8 @@ npm install -g barnowl      # または: npx barnowl <cmd>
 ```
 
 PATH 上に `claude` CLI（Claude Code）とログイン済みの環境が必要です。
+`gpt-*` モデルと画像生成を使う場合は `codex` CLI も入れて ChatGPT
+アカウントでログインしてください（`codex login`）。
 
 ## 使い方
 
@@ -34,13 +38,116 @@ barnowl models                # 使えるモデル名の一覧
 | -------- | ---------------------------- |
 | Base URL | `http://localhost:11435/v1`  |
 | API キー | 任意の文字列（`BARNOWL_API_KEY` を設定しない限り認証オフ） |
-| モデル   | `sonnet` · `opus` · `haiku` · `fable` |
+| モデル   | `sonnet` · `opus` · `haiku` · `fable` · `gpt-5.6-sol` · … |
 
 ```bash
 curl http://localhost:11435/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{"model":"sonnet","messages":[{"role":"user","content":"hi"}]}'
 ```
+
+## モデル
+
+1つのエンドポイントの裏に2つのエンジン。モデル ID で自動ルーティング
+されます（`gpt*`/`codex` → Codex CLI、それ以外 → Claude CLI）:
+
+| ファミリー | モデル ID | 認証 |
+| --- | --- | --- |
+| Claude | `sonnet`（デフォルト）· `opus` · `haiku` · `fable` · `claude-sonnet-5` · `claude-opus-4-8` · `claude-sonnet-4-6` | Claude Code ログイン |
+| Codex | `codex`（CLI 既定）· `gpt-5.6-sol` · `gpt-5.6-terra` · `gpt-5.6-luna` · `gpt-5.5` · `gpt-5.4` · `gpt-5.4-mini` | ChatGPT ログイン（`codex login`） |
+
+一覧は `barnowl models` または `GET /v1/models` で確認できます。
+
+**推論 effort** — モデル ID に `:<effort>` を付けるか、OpenAI の
+`reasoning_effort` フィールドで指定:
+
+```bash
+-d '{"model":"gpt-5.5:high", ...}'          # または "sonnet:xhigh"
+-d '{"model":"gpt-5.6-sol","reasoning_effort":"low", ...}'
+```
+
+レベルはファミリー / 世代ごとに自動でクランプされます:
+
+| ファミリー | レベル |
+| --- | --- |
+| Claude | `low` `medium` `high` `xhigh` `max` |
+| Codex gpt-5.6 以降 | `none` `low` `medium` `high` `xhigh`（`minimal`→`none`、`max`→`xhigh`） |
+| Codex 旧世代 gpt-5.x | `minimal` `low` `medium` `high` |
+
+## リクエストパラメータ — 実際に効くもの
+
+バックエンドは素の API ではなくエージェント CLI なので、OpenAI の
+サンプリング系パラメータが全部通るわけではありません。検証済みの挙動:
+
+| パラメータ | Claude 系 | Codex 系 |
+| --- | --- | --- |
+| `temperature` | ✅ 本物のサンプリング制御 | 無視（バックエンドが拒否） |
+| `top_p` | ✅ | 無視 |
+| `stop` / `stop_sequences` | ✅（サーバー側で切断） | 無視 |
+| `reasoning_effort` / `:suffix` | ✅ | ✅ |
+| `verbosity`（`low`/`medium`/`high`） | 無視 | ✅ 応答長の制御 |
+| `response_format: {"type":"json_object"}` | プロンプト注入方式（```フェンス付きで返ることあり — クライアント側で剥がすこと） | プロンプト注入方式（生 JSON が返る） |
+| `max_tokens`・`n`・`seed`・penalty 系・`logit_bias`・`logprobs`・`user` | 無視 | 無視 |
+
+補足:
+
+- Claude のサンプリングは CLI の API リクエストに `CLAUDE_CODE_EXTRA_BODY`
+  を注入して実現しています。このとき extended thinking は自動オフになる
+  （API が thinking 中は `temperature: 1` しか受けないため）ので、通常
+  リクエストと挙動が少し変わります。`temperature: 0` で決定的な出力に
+  なります。
+- ChatGPT-Codex バックエンドはサンプリング制御を明示拒否
+  （`Unsupported parameter: temperature`）するため、Codex 側は配線の
+  しようがありません。代わりに `reasoning_effort` と `verbosity` を
+  使ってください。同一プロンプトでの `verbosity` の実測: low ≈ 0.9KB、
+  medium ≈ 1.4KB、high ≈ 2〜5KB。
+
+```bash
+# Claude で決定的な出力
+curl http://localhost:11435/v1/chat/completions -H "Content-Type: application/json" \
+  -d '{"model":"haiku","temperature":0,"messages":[{"role":"user","content":"..."}]}'
+
+# Codex で短い回答
+curl http://localhost:11435/v1/chat/completions -H "Content-Type: application/json" \
+  -d '{"model":"gpt-5.6-sol","verbosity":"low","messages":[{"role":"user","content":"..."}]}'
+```
+
+## 画像生成（Codex 系モデル）
+
+`POST /v1/images/generations` — OpenAI Images API 互換。Codex CLI 内蔵の
+`image_generation` ツールを ChatGPT サブスクリプション経由で使うため
+**API 課金なし**。Claude 系モデルでは使えません（400）。
+
+```bash
+curl http://localhost:11435/v1/images/generations -H "Content-Type: application/json" -d '{
+  "model": "gpt-5.6-sol",
+  "prompt": "月明かりの麦畑を飛ぶメンフクロウの水彩画",
+  "size": "1536x1024",
+  "quality": "hd"
+}'
+```
+
+| フィールド | 意味 |
+| --- | --- |
+| `prompt` | 必須 — 画像の説明（日本語テキストも正確に描画される） |
+| `model` | 任意の Codex モデル（既定 `codex`） |
+| `size` | 例: `1024x1024` · `1536x1024` · `1024x1536`（無指定 → 1254×1254） |
+| `quality` | `standard`（既定）または `hd` |
+| `n` | 1〜4 枚（直列生成） |
+| `image` | *（独自拡張）* 編集の参照にするローカル画像のパス |
+
+レスポンス: `{ "created": ..., "data": [{ "b64_json": "...", "path": "..." }] }`
+— `path`（独自拡張）は `~/.barnowl/images/` に保存されたコピーです。
+
+ツール自体には size/quality のパラメータが存在せず、barnowl がプロンプト
+経由で指示します（実測: `1536x1024` 指定 → ぴったり 1536×1024 の PNG）。
+生成時間は標準・正方形で約 2〜3 分、HD・横長で約 5〜6 分。画像ルートは
+10 分枠で動きます（`BARNOWL_IMAGE_TIMEOUT_MS` で上書き可）。
+
+生成は [codex-image](https://github.com/Leon-llb/codex-image) の vendored
+コピー（`vendor/codex-image`、MIT）経由で、barnowl 拡張として
+`--model`/`--quality` 対応・汎用プロンプトテンプレート・高速起動フラグを
+加えています。
 
 ## セッション（会話の継続）
 
@@ -318,6 +425,11 @@ barnowl config         # 有効な設定と、どのファイルが使われた�
 | `BARNOWL_MAX_SESSIONS`    | `8`       | live セッションプロセスの上限   |
 | `BARNOWL_WARM_SESSIONS`   | （有効）  | `off` でウォームプール無効化    |
 | `BARNOWL_CLAUDE_BIN`      | `claude`  | ウォームセッション用 claude バイナリ |
+| `BARNOWL_CODEX_BIN`       | （自動）  | codex バイナリのパス            |
+| `BARNOWL_CODEX_EFFORT`    | （未設定）| Codex 系のデフォルト effort     |
+| `BARNOWL_CODEX_SANDBOX`   | `read-only` | チャット時の codex サンドボックス |
+| `BARNOWL_CODEX_TIMEOUT_MS`| `300000`  | Codex チャットのリクエスト kill |
+| `BARNOWL_IMAGE_TIMEOUT_MS`| `600000`  | 画像生成 1 枚あたりの kill      |
 
 状態（PID とログ）は `~/.barnowl/` に置かれます。
 

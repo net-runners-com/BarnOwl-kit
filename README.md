@@ -2,10 +2,12 @@
 
 [日本語版 README はこちら → README.ja.md](README.ja.md)
 
-Fast, OpenAI-compatible **local Claude server**.
+Fast, OpenAI-compatible **local Claude + Codex server**.
 
 Point Cursor, Aider, Continue, or any OpenAI SDK at it and use `sonnet` /
-`opus` / `haiku` / `fable`.
+`opus` / `haiku` / `fable` — or `gpt-5.6-sol` and friends through your
+ChatGPT login. Codex models can also **generate images**
+(`/v1/images/generations`).
 
 ## Install
 
@@ -14,6 +16,8 @@ npm install -g barnowl      # or: npx barnowl <cmd>
 ```
 
 Requires the `claude` CLI on your PATH (Claude Code) and a working login.
+For `gpt-*` models and image generation, also install the `codex` CLI and
+log in with your ChatGPT account (`codex login`).
 
 ## Usage
 
@@ -34,13 +38,117 @@ barnowl models                # list usable model names
 | -------- | ---------------------------- |
 | Base URL | `http://localhost:11435/v1`  |
 | API key  | any string (auth off unless `BARNOWL_API_KEY` is set) |
-| Models   | `sonnet` · `opus` · `haiku` · `fable` |
+| Models   | `sonnet` · `opus` · `haiku` · `fable` · `gpt-5.6-sol` · … |
 
 ```bash
 curl http://localhost:11435/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{"model":"sonnet","messages":[{"role":"user","content":"hi"}]}'
 ```
+
+## Models
+
+Two engine families behind one endpoint — routing is automatic by model id
+(`gpt*`/`codex` → Codex CLI, everything else → Claude CLI):
+
+| Family | Model ids | Auth |
+| --- | --- | --- |
+| Claude | `sonnet` (default) · `opus` · `haiku` · `fable` · `claude-sonnet-5` · `claude-opus-4-8` · `claude-sonnet-4-6` | Claude Code login |
+| Codex | `codex` (CLI default) · `gpt-5.6-sol` · `gpt-5.6-terra` · `gpt-5.6-luna` · `gpt-5.5` · `gpt-5.4` · `gpt-5.4-mini` | ChatGPT login (`codex login`) |
+
+`barnowl models` lists them; `GET /v1/models` serves them to clients.
+
+**Reasoning effort** — append `:<effort>` to any model id, or send the
+OpenAI `reasoning_effort` field:
+
+```bash
+-d '{"model":"gpt-5.5:high", ...}'          # or "sonnet:xhigh"
+-d '{"model":"gpt-5.6-sol","reasoning_effort":"low", ...}'
+```
+
+Accepted levels are clamped per family/generation automatically:
+
+| Family | Levels |
+| --- | --- |
+| Claude | `low` `medium` `high` `xhigh` `max` |
+| Codex gpt-5.6+ | `none` `low` `medium` `high` `xhigh` (`minimal`→`none`, `max`→`xhigh`) |
+| Codex older gpt-5.x | `minimal` `low` `medium` `high` |
+
+## Request parameters — what actually works
+
+The backends are agent CLIs, not raw APIs, so OpenAI sampling params are
+**not** universally supported. Verified behaviour:
+
+| Param | Claude models | Codex models |
+| --- | --- | --- |
+| `temperature` | ✅ real sampling control | ignored (backend rejects it) |
+| `top_p` | ✅ | ignored |
+| `stop` / `stop_sequences` | ✅ (server-side truncation) | ignored |
+| `reasoning_effort` / `:suffix` | ✅ | ✅ |
+| `verbosity` (`low`/`medium`/`high`) | ignored | ✅ response-length steering |
+| `response_format: {"type":"json_object"}` | prompt-injected (output may still be ```-fenced — strip fences client-side) | prompt-injected (returns raw JSON) |
+| `max_tokens`, `n`, `seed`, penalties, `logit_bias`, `logprobs`, `user` | ignored | ignored |
+
+Notes:
+
+- Claude sampling works by injecting `CLAUDE_CODE_EXTRA_BODY` into the CLI's
+  API request. Extended thinking is auto-disabled on such requests (the API
+  only allows `temperature: 1` while thinking) — expect slightly different
+  behaviour from default requests. `temperature: 0` gives deterministic
+  output.
+- The ChatGPT-Codex backend rejects sampling controls outright
+  (`Unsupported parameter: temperature`), so there is nothing to wire on
+  that path. Use `reasoning_effort` and `verbosity` instead — measured
+  `verbosity` swing on the same prompt: low ≈ 0.9 KB, medium ≈ 1.4 KB,
+  high ≈ 2–5 KB.
+
+```bash
+# deterministic Claude output
+curl http://localhost:11435/v1/chat/completions -H "Content-Type: application/json" \
+  -d '{"model":"haiku","temperature":0,"messages":[{"role":"user","content":"..."}]}'
+
+# short Codex answer
+curl http://localhost:11435/v1/chat/completions -H "Content-Type: application/json" \
+  -d '{"model":"gpt-5.6-sol","verbosity":"low","messages":[{"role":"user","content":"..."}]}'
+```
+
+## Image generation (Codex models)
+
+`POST /v1/images/generations` — OpenAI Images API shape, served by Codex
+CLI's built-in `image_generation` tool through your ChatGPT subscription
+(no API billing). Claude models cannot generate images (400).
+
+```bash
+curl http://localhost:11435/v1/images/generations -H "Content-Type: application/json" -d '{
+  "model": "gpt-5.6-sol",
+  "prompt": "A watercolor barn owl in flight over a moonlit wheat field",
+  "size": "1536x1024",
+  "quality": "hd"
+}'
+```
+
+| Field | Meaning |
+| --- | --- |
+| `prompt` | required — image description (Japanese text renders correctly) |
+| `model` | any Codex model (default `codex`) |
+| `size` | e.g. `1024x1024` · `1536x1024` · `1024x1536` (no hint → 1254×1254) |
+| `quality` | `standard` (default) or `hd` |
+| `n` | 1–4 images, generated sequentially |
+| `image` | *(non-standard)* local path to a reference image to edit |
+
+Response: `{ "created": ..., "data": [{ "b64_json": "...", "path": "..." }] }`
+— `path` (non-standard) is a saved copy under `~/.barnowl/images/`.
+
+The tool has no size/quality parameters of its own — barnowl steers them
+via the prompt, which the model follows exactly (verified: `1536x1024`
+request → 1536×1024 PNG). Generation takes ~2–3 min (standard square) to
+~5–6 min (HD landscape); the route uses a 10-minute window
+(`BARNOWL_IMAGE_TIMEOUT_MS` overrides the per-run kill).
+
+Generation is routed through a vendored copy of
+[codex-image](https://github.com/Leon-llb/codex-image) (`vendor/codex-image`,
+MIT) with barnowl extensions: `--model`/`--quality` passthrough, a
+general-purpose prompt template, and clean codex flags.
 
 ## Sessions (conversation continuity)
 
@@ -322,6 +430,11 @@ barnowl config         # show the effective config + which file was used
 | `BARNOWL_MAX_SESSIONS`    | `8`       | Max live session processes      |
 | `BARNOWL_WARM_SESSIONS`   | (on)      | `off` disables the warm pool    |
 | `BARNOWL_CLAUDE_BIN`      | `claude`  | claude binary for warm sessions |
+| `BARNOWL_CODEX_BIN`       | (auto)    | codex binary path               |
+| `BARNOWL_CODEX_EFFORT`    | (unset)   | default reasoning effort for Codex models |
+| `BARNOWL_CODEX_SANDBOX`   | `read-only` | codex sandbox mode for chat   |
+| `BARNOWL_CODEX_TIMEOUT_MS`| `300000`  | per-request kill for Codex chat |
+| `BARNOWL_IMAGE_TIMEOUT_MS`| `600000`  | per-image kill for image generation |
 
 State (PID + log) lives in `~/.barnowl/`.
 
