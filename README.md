@@ -5,7 +5,7 @@
 Fast, OpenAI-compatible **local Claude + Codex server**.
 
 Point Cursor, Aider, Continue, or any OpenAI SDK at it and use `sonnet` /
-`opus` / `haiku` / `fable` — or `gpt-5.6-sol` and friends through your
+`opus` / `haiku` / `fable` — or `gpt-5.6-terra` and friends through your
 ChatGPT login. Codex models can also **generate images**
 (`/v1/images/generations`).
 
@@ -38,7 +38,7 @@ barnowl models                # list usable model names
 | -------- | ---------------------------- |
 | Base URL | `http://localhost:11435/v1`  |
 | API key  | any string (auth off unless `BARNOWL_API_KEY` is set) |
-| Models   | `sonnet` · `opus` · `haiku` · `fable` · `gpt-5.6-sol` · … |
+| Models   | `sonnet` · `opus` · `haiku` · `fable` · `gpt-5.6-terra` · … |
 
 ```bash
 curl http://localhost:11435/v1/chat/completions \
@@ -53,11 +53,17 @@ Two engine families behind one endpoint — routing is automatic by model id
 
 | Family | Model ids | Auth |
 | --- | --- | --- |
-| Claude | `sonnet` (default) · `opus` · `haiku` · `fable` · `claude-opus-5` · `claude-opus-5[1m]` (1M context) · `claude-sonnet-5` · `claude-opus-4-8` · `claude-sonnet-4-6` | Claude Code login |
-| Codex | `codex` (CLI default) · `gpt-5.6-sol` · `gpt-5.6-terra` · `gpt-5.6-luna` · `gpt-5.5` · `gpt-5.4` · `gpt-5.4-mini` | ChatGPT login (`codex login`) |
+| Claude | `sonnet` (default) · `opus` · `haiku` · `fable` · `claude-fable-5-1` · `claude-opus-5` · `claude-opus-5[1m]` (1M context) · `claude-sonnet-5` · `claude-sonnet-5[1m]` (1M context) · `claude-opus-4-8` · `claude-sonnet-4-6` | Claude Code login |
+| Codex | `codex` (CLI default = `gpt-5.6-terra`) · `gpt-5.6-terra` · `gpt-5.6-luna` · `gpt-5.5` | ChatGPT login (`codex login`) |
 
-`claude-opus-5[1m]` is Opus 5 with a 1M-token context window — same id you
-pass to the `claude` CLI, brackets included.
+The aliases track the CLI's current models: `fable` → Fable 5.1, `opus` →
+Opus 5, `sonnet` → Sonnet 5, `haiku` → Haiku 4.5. The `[1m]` ids are the
+1M-token context variants — same id you pass to the `claude` CLI, brackets
+included.
+
+Retired: `claude-fable-5` (now refuses even trivial prompts — use `fable` /
+`claude-fable-5-1`) and `gpt-5.6-sol` / `gpt-5.4` / `gpt-5.4-mini` (the
+ChatGPT backend answers 400 "not supported").
 
 `barnowl models` lists every id in `config/models.json`. `GET /v1/models`
 advertises the discovery subset (legacy Claude ids + all Codex ids); ids that
@@ -68,16 +74,22 @@ OpenAI `reasoning_effort` field:
 
 ```bash
 -d '{"model":"gpt-5.5:high", ...}'          # or "sonnet:xhigh"
--d '{"model":"gpt-5.6-sol","reasoning_effort":"low", ...}'
+-d '{"model":"gpt-5.6-terra","reasoning_effort":"low", ...}'
 ```
 
-Accepted levels are clamped per family/generation automatically:
+Accepted levels are clamped per model automatically (anything above a
+model's ceiling becomes its highest level; `minimal`→`none`):
 
 | Family | Levels |
 | --- | --- |
 | Claude | `low` `medium` `high` `xhigh` `max` |
-| Codex gpt-5.6+ | `none` `low` `medium` `high` `xhigh` (`minimal`→`none`, `max`→`xhigh`) |
-| Codex older gpt-5.x | `minimal` `low` `medium` `high` |
+| Codex gpt-5.6-terra | `none` `low` `medium` `high` `xhigh` `max` `ultra` |
+| Codex gpt-5.6-luna | `none` `low` `medium` `high` `xhigh` `max` |
+| Codex gpt-5.5 | `none` `low` `medium` `high` `xhigh` |
+
+`ultra` is Codex's max reasoning plus automatic task delegation. The Claude
+CLI ignores values outside its list (`none`, `ultra`, …) and runs at its
+default effort.
 
 ## Request parameters — what actually works
 
@@ -114,7 +126,7 @@ curl http://localhost:11435/v1/chat/completions -H "Content-Type: application/js
 
 # short Codex answer
 curl http://localhost:11435/v1/chat/completions -H "Content-Type: application/json" \
-  -d '{"model":"gpt-5.6-sol","verbosity":"low","messages":[{"role":"user","content":"..."}]}'
+  -d '{"model":"gpt-5.6-terra","verbosity":"low","messages":[{"role":"user","content":"..."}]}'
 ```
 
 ## Image generation (Codex models)
@@ -125,7 +137,7 @@ CLI's built-in `image_generation` tool through your ChatGPT subscription
 
 ```bash
 curl http://localhost:11435/v1/images/generations -H "Content-Type: application/json" -d '{
-  "model": "gpt-5.6-sol",
+  "model": "gpt-5.6-terra",
   "prompt": "A watercolor barn owl in flight over a moonlit wheat field",
   "size": "1536x1024",
   "quality": "hd"

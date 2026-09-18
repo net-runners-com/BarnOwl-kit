@@ -381,7 +381,7 @@ function cmdModels() {
   console.log("  sonnet   — everyday / coding (default)");
   console.log("  opus     — hardest reasoning");
   console.log("  haiku    — fastest / lightweight");
-  console.log("  fable    — most capable (Claude 5 family)");
+  console.log("  fable    — most capable (currently Fable 5.1)");
   if (models.length) {
     console.log("\nAll ids in config/models.json:");
     for (const m of models) console.log("  " + m.id + (m.label ? "  — " + m.label : ""));

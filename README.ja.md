@@ -5,7 +5,7 @@
 高速な OpenAI 互換の**ローカル Claude + Codex サーバー**。
 
 Cursor・Aider・Continue や任意の OpenAI SDK を向けるだけで、`sonnet` /
-`opus` / `haiku` / `fable` に加え、ChatGPT ログイン経由の `gpt-5.6-sol`
+`opus` / `haiku` / `fable` に加え、ChatGPT ログイン経由の `gpt-5.6-terra`
 などが使えます。Codex 系モデルは**画像生成**（`/v1/images/generations`）
 にも対応。
 
@@ -38,7 +38,7 @@ barnowl models                # 使えるモデル名の一覧
 | -------- | ---------------------------- |
 | Base URL | `http://localhost:11435/v1`  |
 | API キー | 任意の文字列（`BARNOWL_API_KEY` を設定しない限り認証オフ） |
-| モデル   | `sonnet` · `opus` · `haiku` · `fable` · `gpt-5.6-sol` · … |
+| モデル   | `sonnet` · `opus` · `haiku` · `fable` · `gpt-5.6-terra` · … |
 
 ```bash
 curl http://localhost:11435/v1/chat/completions \
@@ -53,11 +53,17 @@ curl http://localhost:11435/v1/chat/completions \
 
 | ファミリー | モデル ID | 認証 |
 | --- | --- | --- |
-| Claude | `sonnet`（デフォルト）· `opus` · `haiku` · `fable` · `claude-opus-5` · `claude-opus-5[1m]`（1M コンテキスト）· `claude-sonnet-5` · `claude-opus-4-8` · `claude-sonnet-4-6` | Claude Code ログイン |
-| Codex | `codex`（CLI 既定）· `gpt-5.6-sol` · `gpt-5.6-terra` · `gpt-5.6-luna` · `gpt-5.5` · `gpt-5.4` · `gpt-5.4-mini` | ChatGPT ログイン（`codex login`） |
+| Claude | `sonnet`（デフォルト）· `opus` · `haiku` · `fable` · `claude-fable-5-1` · `claude-opus-5` · `claude-opus-5[1m]`（1M コンテキスト）· `claude-sonnet-5` · `claude-sonnet-5[1m]`（1M コンテキスト）· `claude-opus-4-8` · `claude-sonnet-4-6` | Claude Code ログイン |
+| Codex | `codex`（CLI 既定 = `gpt-5.6-terra`）· `gpt-5.6-terra` · `gpt-5.6-luna` · `gpt-5.5` | ChatGPT ログイン（`codex login`） |
 
-`claude-opus-5[1m]` は Opus 5 の 1M トークンコンテキスト版です。角括弧込みで
-そのまま `claude` CLI に渡る ID なので、この表記のまま指定してください。
+エイリアスは CLI の現行モデルを指します: `fable` → Fable 5.1、`opus` → Opus 5、
+`sonnet` → Sonnet 5、`haiku` → Haiku 4.5。`[1m]` 付き ID は 1M トークン
+コンテキスト版です。角括弧込みでそのまま `claude` CLI に渡る ID なので、
+この表記のまま指定してください。
+
+廃止: `claude-fable-5`（無害なプロンプトでも拒否が返る — `fable` /
+`claude-fable-5-1` を使う）、`gpt-5.6-sol` / `gpt-5.4` / `gpt-5.4-mini`
+（ChatGPT バックエンドが 400 "not supported" を返す）。
 
 `barnowl models` は `config/models.json` の全 ID を表示します。`GET /v1/models`
 が広告するのはディスカバリ用のサブセット（旧 Claude ID + Codex 系すべて）で、
@@ -68,16 +74,21 @@ curl http://localhost:11435/v1/chat/completions \
 
 ```bash
 -d '{"model":"gpt-5.5:high", ...}'          # または "sonnet:xhigh"
--d '{"model":"gpt-5.6-sol","reasoning_effort":"low", ...}'
+-d '{"model":"gpt-5.6-terra","reasoning_effort":"low", ...}'
 ```
 
-レベルはファミリー / 世代ごとに自動でクランプされます:
+レベルはモデルごとに自動でクランプされます（上限を超える値はそのモデルの
+最上位に、`minimal`→`none`）:
 
 | ファミリー | レベル |
 | --- | --- |
 | Claude | `low` `medium` `high` `xhigh` `max` |
-| Codex gpt-5.6 以降 | `none` `low` `medium` `high` `xhigh`（`minimal`→`none`、`max`→`xhigh`） |
-| Codex 旧世代 gpt-5.x | `minimal` `low` `medium` `high` |
+| Codex gpt-5.6-terra | `none` `low` `medium` `high` `xhigh` `max` `ultra` |
+| Codex gpt-5.6-luna | `none` `low` `medium` `high` `xhigh` `max` |
+| Codex gpt-5.5 | `none` `low` `medium` `high` `xhigh` |
+
+`ultra` は Codex の最大推論＋自動タスク委譲です。Claude CLI は一覧外の値
+（`none`・`ultra` など）を無視して既定 effort で動きます。
 
 ## リクエストパラメータ — 実際に効くもの
 
@@ -114,7 +125,7 @@ curl http://localhost:11435/v1/chat/completions -H "Content-Type: application/js
 
 # Codex で短い回答
 curl http://localhost:11435/v1/chat/completions -H "Content-Type: application/json" \
-  -d '{"model":"gpt-5.6-sol","verbosity":"low","messages":[{"role":"user","content":"..."}]}'
+  -d '{"model":"gpt-5.6-terra","verbosity":"low","messages":[{"role":"user","content":"..."}]}'
 ```
 
 ## 画像生成（Codex 系モデル）
@@ -125,7 +136,7 @@ curl http://localhost:11435/v1/chat/completions -H "Content-Type: application/js
 
 ```bash
 curl http://localhost:11435/v1/images/generations -H "Content-Type: application/json" -d '{
-  "model": "gpt-5.6-sol",
+  "model": "gpt-5.6-terra",
   "prompt": "月明かりの麦畑を飛ぶメンフクロウの水彩画",
   "size": "1536x1024",
   "quality": "hd"
