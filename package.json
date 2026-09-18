@@ -27,7 +27,8 @@
     "postinstall": "node lib/patch-otterly.js",
     "start": "node bin/barnowl.js start",
     "stop": "node bin/barnowl.js stop",
-    "verify": "node bin/barnowl.js verify"
+    "verify": "node bin/barnowl.js verify",
+    "test": "node --test test/*.test.js"
   },
   "dependencies": {
     "otterly": "^0.8.0"
