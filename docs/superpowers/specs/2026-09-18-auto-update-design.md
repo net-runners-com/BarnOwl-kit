@@ -57,6 +57,8 @@ Never throws; any unexpected error becomes `failed`.
     any patch migrations.
   - `current` → silent.
   - `skipped` / `failed` → `Auto-update skipped: <reason>` and continue.
+  - No `.git` (npm-registry install) → the check is not run and nothing is
+    printed.
 
 ## Testing
 

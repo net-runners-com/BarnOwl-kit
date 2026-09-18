@@ -15,6 +15,7 @@ const os = require("os");
 const path = require("path");
 const { spawn, spawnSync } = require("child_process");
 const { ensurePatched } = require("../lib/patch-otterly.js");
+const { checkForUpdate } = require("../lib/self-update.js");
 
 const PKG = require("../package.json");
 
@@ -31,6 +32,7 @@ const BUILTIN = {
   maxQueue: "50",
   rateLimit: "60",
   apiKey: undefined, // forwarded to otterly's OTTERLY_API_KEY (Bearer auth) when present
+  autoUpdate: "true", // git-clone installs fast-forward to origin/main on start
 };
 
 const STATE_DIR = path.join(os.homedir(), ".barnowl");
@@ -67,6 +69,7 @@ function parseFlags(argv) {
     else if (a === "-d" || a === "--dir") flags.dir = argv[++i];
     else if (a === "--mcp") flags.mcp = argv[++i];
     else if (a === "--config") configPath = argv[++i];
+    else if (a === "--no-update") flags.autoUpdate = "false";
   }
 
   const file = loadConfigFile(configPath);
@@ -80,6 +83,7 @@ function parseFlags(argv) {
     maxQueue: process.env.BARNOWL_MAX_QUEUE,
     rateLimit: process.env.BARNOWL_RATE_LIMIT,
     apiKey: process.env.BARNOWL_API_KEY,
+    autoUpdate: process.env.BARNOWL_AUTO_UPDATE,
   };
 
   const pick = (key) => {
@@ -100,6 +104,7 @@ function parseFlags(argv) {
     maxQueue: pick("maxQueue"),
     rateLimit: pick("rateLimit"),
     apiKey: pick("apiKey"),
+    autoUpdate: !["0", "false", "no", "off"].includes(String(pick("autoUpdate")).toLowerCase()),
     configFile: file ? file.path : null,
   };
   // "mcp": false / "none" in the file explicitly disables MCP even if env sets it
@@ -163,6 +168,24 @@ async function httpJson(url, opts) {
 async function cmdStart(argv) {
   const cfg = parseFlags(argv);
   fs.mkdirSync(STATE_DIR, { recursive: true });
+
+  // Follow GitHub: fast-forward this clone before launching. After an update
+  // the code loaded in this process is stale, so the start re-runs in a child.
+  const root = path.join(__dirname, "..");
+  if (cfg.autoUpdate && fs.existsSync(path.join(root, ".git")) && !isAlive(readPid())) {
+    const up = checkForUpdate(root);
+    if (up.status === "updated") {
+      console.log(`  Updated ${up.from} → ${up.to} (${up.commits} commit${up.commits === 1 ? "" : "s"})`);
+      if (up.installFailed) console.error("  WARN: npm install failed after the update; run it in " + root);
+      const r = spawnSync(process.execPath, [__filename, "start", ...argv], {
+        stdio: "inherit",
+        env: { ...process.env, BARNOWL_AUTO_UPDATE: "0" },
+      });
+      return r.status ?? 1;
+    }
+    if (up.status !== "current") console.log(`  Auto-update skipped: ${up.reason}`);
+  }
+
   if (cfg.configFile) console.log(`  Config   : ${cfg.configFile}`);
   // otterly reads OTTERLY_API_KEY for Bearer auth; forward barnowl's key to it.
   if (cfg.apiKey) process.env.OTTERLY_API_KEY = cfg.apiKey;
@@ -394,7 +417,7 @@ function cmdHelp() {
   barnowl v${PKG.version} — fast OpenAI-compatible local Claude server
 
   Usage:
-    barnowl start [-p <port>] [-d <dir>] [--mcp <profile>] [--config <file>]
+    barnowl start [-p <port>] [-d <dir>] [--mcp <profile>] [--config <file>] [--no-update]
     barnowl stop  [-p <port>]              Stop the server
     barnowl restart                        Restart
     barnowl status                         Health check (JSON)
@@ -408,12 +431,16 @@ function cmdHelp() {
     ./barnowl.config.json, or ~/.barnowl/config.json
     { "port": 11435, "dir": "...", "mcp": "sheet", ... }  ("mcp": "none" disables)
 
+  Auto-update:
+    git-clone installs fast-forward to origin/main on start
+    (--no-update, BARNOWL_AUTO_UPDATE=0, or "autoUpdate": false to skip)
+
   Client setup:
     Base URL : http://localhost:11435/v1
     API key  : any string (auth disabled unless BARNOWL_API_KEY is set)
     Models   : sonnet | opus | haiku | fable
 
-  Env: BARNOWL_PORT, BARNOWL_WORK_DIR, BARNOWL_API_KEY,
+  Env: BARNOWL_PORT, BARNOWL_WORK_DIR, BARNOWL_API_KEY, BARNOWL_AUTO_UPDATE,
        BARNOWL_QUEUE_TIMEOUT, BARNOWL_MAX_CONCURRENT, BARNOWL_MAX_QUEUE, BARNOWL_RATE_LIMIT
 `);
   return 0;
@@ -445,6 +472,7 @@ async function main() {
           maxConcurrent: 5,
           maxQueue: 50,
           rateLimit: 60,
+          autoUpdate: true,
         };
         fs.writeFileSync(target, JSON.stringify(starter, null, 2) + "\n");
         console.log(`created: ${target}`);
@@ -459,6 +487,7 @@ async function main() {
           queueTimeout: cfg.queueTimeout, maxConcurrent: cfg.maxConcurrent,
           maxQueue: cfg.maxQueue, rateLimit: cfg.rateLimit,
           apiKey: cfg.apiKey ? "(set)" : null,
+          autoUpdate: cfg.autoUpdate,
           configFile: cfg.configFile,
         }, null, 2));
       return 0;

@@ -25,12 +25,21 @@ log in with your ChatGPT account (`codex login`).
 barnowl start                 # start on port 11435 (fast chat, no MCP)
 barnowl start --mcp sheet     # load ONLY the "sheet" MCP profile (server-side tools)
 barnowl start -p 8080 -d ~/x  # custom port / working dir
+barnowl start --no-update     # skip the GitHub update check
 barnowl verify                # end-to-end check + latency
 barnowl status                # health JSON
 barnowl stop
 barnowl restart
 barnowl models                # list usable model names
 ```
+
+**Auto-update.** When barnowl runs from a git clone, every `start` (and
+`restart`) fetches `origin/main` and fast-forwards before the server
+launches, so model-lineup fixes merged on GitHub reach you without a manual
+pull (`npm install` runs too when dependencies changed). It only touches a
+clean `main` checkout; another branch, local edits or an offline fetch just
+print `Auto-update skipped: …` and start as-is. npm-registry installs are
+left alone.
 
 ## Client setup
 
@@ -423,7 +432,8 @@ barnowl config         # show the effective config + which file was used
   "queueTimeout": 300,
   "maxConcurrent": 5,
   "maxQueue": 50,
-  "rateLimit": 60
+  "rateLimit": 60,
+  "autoUpdate": true
 }
 ```
 
@@ -431,6 +441,8 @@ barnowl config         # show the effective config + which file was used
   or `"none"` to disable.
 - File lookup: `--config <path>` > `./barnowl.config.json` > `~/.barnowl/config.json`.
 - `apiKey` in the file sets `BARNOWL_API_KEY` (Bearer auth) on start.
+- `autoUpdate` — `false` stops `start` from fast-forwarding a git clone to
+  `origin/main`.
 
 ## Configuration (env vars)
 
@@ -439,6 +451,7 @@ barnowl config         # show the effective config + which file was used
 | `BARNOWL_PORT`            | `11435`   | Listen port                     |
 | `BARNOWL_WORK_DIR`        | cwd       | Working directory for Claude    |
 | `BARNOWL_API_KEY`         | (unset)   | Require Bearer auth when set     |
+| `BARNOWL_AUTO_UPDATE`     | (on)      | `0` skips the GitHub update check on start |
 | `BARNOWL_QUEUE_TIMEOUT`   | `300`     | Queue wait timeout (seconds)    |
 | `BARNOWL_MAX_CONCURRENT`  | `5`       | Max concurrent requests         |
 | `BARNOWL_MAX_QUEUE`       | `50`      | Max queued requests             |

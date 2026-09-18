@@ -25,12 +25,20 @@ PATH 上に `claude` CLI（Claude Code）とログイン済みの環境が必要
 barnowl start                 # ポート 11435 で起動（高速チャット、MCP なし）
 barnowl start --mcp sheet     # "sheet" MCP プロファイルだけ読み込む（サーバーサイドツール）
 barnowl start -p 8080 -d ~/x  # ポート / 作業ディレクトリを指定
+barnowl start --no-update     # GitHub の更新確認をしない
 barnowl verify                # エンドツーエンド確認 + レイテンシ計測
 barnowl status                # ヘルスチェック（JSON）
 barnowl stop
 barnowl restart
 barnowl models                # 使えるモデル名の一覧
 ```
+
+**自動アップデート** — git クローンから動かしている場合、`start`（と
+`restart`）のたびに `origin/main` を取得し、起動前に fast-forward します。
+GitHub にマージされたモデル更新が手動 pull なしで反映されます（依存が
+変わっていれば `npm install` も実行）。対象はクリーンな `main` のみで、
+別ブランチ・ローカル変更・オフラインのときは `Auto-update skipped: …` を
+表示してそのまま起動します。npm レジストリからのインストールは対象外です。
 
 ## クライアント設定
 
@@ -417,7 +425,8 @@ barnowl config         # 有効な設定と、どのファイルが使われた�
   "queueTimeout": 300,
   "maxConcurrent": 5,
   "maxQueue": 50,
-  "rateLimit": 60
+  "rateLimit": 60,
+  "autoUpdate": true
 }
 ```
 
@@ -425,6 +434,8 @@ barnowl config         # 有効な設定と、どのファイルが使われた�
   または `"none"` で無効化。
 - ファイル探索順: `--config <path>` > `./barnowl.config.json` > `~/.barnowl/config.json`。
 - ファイル内の `apiKey` は起動時に `BARNOWL_API_KEY`（Bearer 認証）として設定されます。
+- `autoUpdate` — `false` にすると `start` 時の `origin/main` への
+  fast-forward を行いません。
 
 ## 設定（環境変数）
 
@@ -433,6 +444,7 @@ barnowl config         # 有効な設定と、どのファイルが使われた�
 | `BARNOWL_PORT`            | `11435`   | 待ち受けポート                  |
 | `BARNOWL_WORK_DIR`        | cwd       | Claude の作業ディレクトリ       |
 | `BARNOWL_API_KEY`         | （未設定）| 設定すると Bearer 認証を必須化  |
+| `BARNOWL_AUTO_UPDATE`     | （有効）  | `0` で起動時の GitHub 更新確認を省略 |
 | `BARNOWL_QUEUE_TIMEOUT`   | `300`     | キュー待ちタイムアウト（秒）    |
 | `BARNOWL_MAX_CONCURRENT`  | `5`       | 最大同時リクエスト数            |
 | `BARNOWL_MAX_QUEUE`       | `50`      | 最大キュー数                    |
