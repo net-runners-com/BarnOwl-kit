@@ -24,8 +24,8 @@
     },
     {
       "id": "fable",
-      "label": "Fable（最高性能・Claude 5 ファミリー）",
-      "aliases": ["claude-fable-5"],
+      "label": "Fable（最高性能・現在は Fable 5.1）",
+      "aliases": ["claude-fable-5-1"],
       "contextWindow": 200000,
       "recommendedFor": ["hardest-reasoning", "frontier"]
     },
@@ -48,6 +48,12 @@
       "recommendedFor": ["latest-sonnet"]
     },
     {
+      "id": "claude-sonnet-5[1m]",
+      "label": "Claude Sonnet 5（1M コンテキスト）",
+      "contextWindow": 1000000,
+      "recommendedFor": ["long-context", "coding"]
+    },
+    {
       "id": "claude-opus-5",
       "label": "Claude Opus 5（最新 Opus）",
       "contextWindow": 200000,
@@ -60,6 +66,12 @@
       "recommendedFor": ["long-context", "complex-reasoning"]
     },
     {
+      "id": "claude-fable-5-1",
+      "label": "Claude Fable 5.1（最新 Fable）",
+      "contextWindow": 200000,
+      "recommendedFor": ["hardest-reasoning", "frontier"]
+    },
+    {
       "id": "default",
       "label": "Claude Code デフォルト",
       "contextWindow": 200000,
@@ -67,24 +79,16 @@
     },
     {
       "id": "codex",
-      "label": "OpenAI Codex（既定 gpt-5.6-sol・ChatGPTログイン）",
-      "aliases": ["gpt-5.6-sol"],
+      "label": "OpenAI Codex（既定 gpt-5.6-terra・ChatGPTログイン）",
+      "aliases": ["gpt-5.6-terra"],
       "engine": "codex",
       "provider": "openai",
       "contextWindow": 272000,
       "recommendedFor": ["coding", "openai"]
     },
     {
-      "id": "gpt-5.6-sol",
-      "label": "Codex gpt-5.6-sol（Codex CLI 既定）",
-      "engine": "codex",
-      "provider": "openai",
-      "contextWindow": 272000,
-      "recommendedFor": ["coding"]
-    },
-    {
       "id": "gpt-5.6-terra",
-      "label": "Codex gpt-5.6-terra（バランス・日常のエージェント作業）",
+      "label": "Codex gpt-5.6-terra（Codex CLI 既定・バランス型）",
       "engine": "codex",
       "provider": "openai",
       "contextWindow": 272000,
@@ -92,49 +96,39 @@
     },
     {
       "id": "gpt-5.6-luna",
-      "label": "Codex gpt-5.6-luna",
+      "label": "Codex gpt-5.6-luna（高速・低コスト）",
       "engine": "codex",
       "provider": "openai",
       "contextWindow": 272000,
-      "recommendedFor": ["coding"]
+      "recommendedFor": ["coding", "simple-tasks"]
     },
     {
       "id": "gpt-5.5",
-      "label": "Codex gpt-5.5（フロンティア・高難度）",
-      "engine": "codex",
-      "provider": "openai",
-      "contextWindow": 272000,
-      "recommendedFor": ["complex-reasoning"]
-    },
-    {
-      "id": "gpt-5.4",
-      "label": "Codex gpt-5.4",
+      "label": "Codex gpt-5.5（前世代）",
       "engine": "codex",
       "provider": "openai",
       "contextWindow": 272000,
       "recommendedFor": ["coding"]
-    },
-    {
-      "id": "gpt-5.4-mini",
-      "label": "Codex gpt-5.4-mini（小型・最速・低コスト）",
-      "engine": "codex",
-      "provider": "openai",
-      "contextWindow": 272000,
-      "recommendedFor": ["simple-tasks"]
     }
   ],
   "effortLevels": {
-    "codex-gpt5.6+": ["none", "low", "medium", "high", "xhigh"],
+    "codex-gpt-5.6-terra": ["none", "low", "medium", "high", "xhigh", "max", "ultra"],
+    "codex-gpt-5.6-luna": ["none", "low", "medium", "high", "xhigh", "max"],
+    "codex-gpt-5.5": ["none", "low", "medium", "high", "xhigh"],
     "codex-legacy": ["minimal", "low", "medium", "high"],
     "claude": ["low", "medium", "high", "xhigh", "max"],
-    "howToSet": "リクエストの reasoning_effort フィールド、または model に ':<effort>' を付与（例: 'gpt-5.5:high', 'sonnet:high'）。モデル世代に合わせて自動クランプされる",
+    "howToSet": "リクエストの reasoning_effort フィールド、または model に ':<effort>' を付与（例: 'gpt-5.5:high', 'sonnet:high'）。Codex 系はモデルごとに自動クランプ（上限超えは最上位へ、minimal→none）。ultra は gpt-5.6-terra 専用（max＋自動タスク委譲）。Claude 系は範囲外の値を無視して既定 effort で動く",
     "verbosity": "Codex 系のみ: リクエストの verbosity フィールド（low|medium|high）が -c model_verbosity に渡る",
     "samplingParams": "temperature / top_p / stop は Claude 系のみ実際に効く（CLAUDE_CODE_EXTRA_BODY 注入・thinking 自動オフ）。Codex 系はバックエンドが拒否するため無視"
   },
   "deprecatedIds": [
     "claude-sonnet-4-20250514",
     "claude-opus-4-20250514",
-    "claude-3-5-haiku-20241022"
+    "claude-3-5-haiku-20241022",
+    "claude-fable-5",
+    "gpt-5.6-sol",
+    "gpt-5.4",
+    "gpt-5.4-mini"
   ],
-  "deprecatedNote": "/v1/models に表示されるが、Claude CLI が拒否することがある。上記 id または aliases を使うこと。"
+  "deprecatedNote": "Claude 旧 id は /v1/models に表示されるが CLI が拒否することがある。claude-fable-5 は無害なプロンプトでも safeguards 拒否が返る（2026-09-18 確認）ため fable / claude-fable-5-1 を使うこと。gpt-5.6-sol / gpt-5.4 / gpt-5.4-mini は ChatGPT アカウントでは 400（not supported）。"
 }
