@@ -6,7 +6,7 @@
  * speed patch (see lib/patch-otterly.js) so each request returns in ~6s instead
  * of ~37s, at the cost of MCP tools (browser automation, etc.).
  *
- * Commands: start | stop | restart | status | verify | models | help
+ * Commands: start | stop | restart | status | verify | models | login | help
  */
 "use strict";
 
@@ -16,7 +16,10 @@ const path = require("path");
 const { spawn, spawnSync } = require("child_process");
 const { ensurePatched } = require("../lib/patch-otterly.js");
 const { checkForUpdate } = require("../lib/self-update.js");
-const { stateDir } = require("../lib/model-catalog.cjs");
+const {
+  PROVIDERS, HIDDEN, stateDir, refreshCatalog, readCatalog, summarize, claudeBin, codexBin,
+} = require("../lib/model-catalog.cjs");
+const { NAMES } = require("../lib/auth-errors.cjs");
 const { PATH_KEYS, applyPaths, detectPaths } = require("../lib/paths.cjs");
 
 const PKG = require("../package.json");
@@ -192,6 +195,35 @@ async function httpJson(url, opts) {
   return { status: res.status, json, text };
 }
 
+/** Model / auth lines for start and login, plus a hint per unhealthy login. */
+function printCatalogSummary(catalog) {
+  const s = summarize(catalog);
+  const count = (p) => (s[p].count === null ? "static list" : String(s[p].count));
+  console.log(`  Models   : Claude ${count("claude")} · Codex ${count("codex")}`);
+  console.log(`  Auth     : claude ${s.claude.status} · codex ${s.codex.status}`);
+  for (const p of PROVIDERS) {
+    const { status, message } = s[p];
+    if (status === "revoked") console.log(`  WARN: ${NAMES[p]} login revoked — run: barnowl login ${p}`);
+    else if (status === "logged_out") console.log(`  WARN: not logged in to ${NAMES[p]} — run: barnowl login ${p}`);
+    else if (status === "unknown" && message) console.log(`  Note: ${NAMES[p]} model list not refreshed (${message})`);
+  }
+  if (catalog && catalog.writeError) console.error(`  WARN: could not save the model catalog: ${catalog.writeError}`);
+}
+
+/** Auth block for `barnowl status` (works while the server is down). */
+function printAuthStatus(catalog) {
+  if (!catalog) {
+    console.log("\nAuth: no catalog yet — run `barnowl start` or `barnowl login`");
+    return;
+  }
+  const s = summarize(catalog);
+  console.log(`\nAuth (catalog refreshed ${catalog.refreshedAt || "never"}):`);
+  for (const p of PROVIDERS) {
+    const { status, checkedAt, message } = s[p];
+    console.log(`  ${p.padEnd(7)} ${status.padEnd(11)} checked ${checkedAt || "-"}${message ? `  — ${message}` : ""}`);
+  }
+}
+
 // ── Commands ────────────────────────────────────────────────────────────────
 async function cmdStart(argv) {
   const cfg = parseFlags(argv);
@@ -247,6 +279,10 @@ async function cmdStart(argv) {
     console.log(`  Base URL: ${baseUrl(cfg.port)}/v1`);
     return 0;
   }
+
+  // Ask the Claude / Codex backends which models these logins can use. The
+  // server reads the result from the catalog file (lib/auth-state.cjs).
+  printCatalogSummary(await refreshCatalog());
 
   const cli = resolveOtterlyCli();
   const args = [
@@ -357,15 +393,17 @@ async function cmdRestart(argv) {
 
 async function cmdStatus(argv) {
   const cfg = parseFlags(argv);
+  let code = 1;
   try {
     const { status, json } = await httpJson(`${baseUrl(cfg.port)}/api/status`);
     console.log(`HTTP ${status}`);
     if (json) console.log(JSON.stringify(json, null, 2));
-    return status === 200 ? 0 : 1;
+    code = status === 200 ? 0 : 1;
   } catch (err) {
     console.error(`Not reachable on ${baseUrl(cfg.port)} (${err.message})`);
-    return 1;
   }
+  printAuthStatus(readCatalog());
+  return code;
 }
 
 async function cmdVerify(argv) {
@@ -424,6 +462,20 @@ async function cmdVerify(argv) {
 }
 
 function cmdModels() {
+  const catalog = readCatalog();
+  if (catalog) {
+    console.log("Models from the live catalog (refreshed on every `barnowl start`):");
+    for (const p of PROVIDERS) {
+      const e = catalog.providers[p];
+      if (!e) continue;
+      const hidden = HIDDEN.has(e.status) ? ` — hidden from /v1/models; run: barnowl login ${p}` : "";
+      console.log(`\n${NAMES[p]} (${e.status}${hidden}):`);
+      const models = Array.isArray(e.models) ? e.models : [];
+      if (!models.length) console.log("  (static list)");
+      for (const m of models) console.log(`  ${m.id}  — ${m.label}`);
+    }
+    return 0;
+  }
   let models = [];
   try {
     models = require("../config/models.json").models || [];
@@ -440,6 +492,35 @@ function cmdModels() {
   return 0;
 }
 
+async function cmdLogin(argv) {
+  const which = argv[0];
+  if (which && !PROVIDERS.includes(which)) {
+    console.error("Usage: barnowl login [claude|codex]");
+    return 1;
+  }
+  let targets = which ? [which] : null;
+  if (!targets) {
+    const s = summarize(await refreshCatalog());
+    targets = PROVIDERS.filter((p) => HIDDEN.has(s[p].status));
+    if (!targets.length) {
+      console.log("Claude and Codex logins are OK — nothing to do. (barnowl login claude|codex forces one)");
+      return 0;
+    }
+  }
+  for (const p of targets) {
+    const [bin, args] = p === "claude" ? [claudeBin(), ["auth", "login"]] : [codexBin(), ["login"]];
+    console.log(`→ ${bin} ${args.join(" ")}`);
+    const r = spawnSync(bin, args, { stdio: "inherit", shell: process.platform === "win32" });
+    if (r.status !== 0) {
+      console.error(`${NAMES[p]} login did not complete (${r.error ? r.error.message : `exit ${r.status}`}).`);
+      return 1;
+    }
+  }
+  printCatalogSummary(await refreshCatalog());
+  console.log("A running server picks this up within a few seconds — no restart needed.");
+  return 0;
+}
+
 function cmdHelp() {
   console.log(`
   barnowl v${PKG.version} — fast OpenAI-compatible local Claude server
@@ -450,7 +531,8 @@ function cmdHelp() {
     barnowl restart                        Restart
     barnowl status                         Health check (JSON)
     barnowl verify                         End-to-end check + latency
-    barnowl models                         List usable model names
+    barnowl models                         Live model list (per login)
+    barnowl login [claude|codex]           Re-login (revoked / expired), no restart
     barnowl config                         Show effective config + source
     barnowl config init [path]             Create a starter config file
     barnowl help | version
@@ -466,12 +548,16 @@ function cmdHelp() {
     git-clone installs fast-forward to origin/main on start
     (--no-update, BARNOWL_AUTO_UPDATE=0, or "autoUpdate": false to skip)
 
+  Models & logins:
+    start asks Claude / Codex which models your logins can use (<state dir>/catalog.json);
+    a revoked login answers 401 and its models leave /v1/models until \`barnowl login\`
+
   Client setup:
     Base URL : http://localhost:11435/v1
     API key  : any string (auth disabled unless BARNOWL_API_KEY is set)
     Models   : sonnet | opus | haiku | fable
 
-  Env: BARNOWL_PORT, BARNOWL_WORK_DIR, BARNOWL_API_KEY, BARNOWL_AUTO_UPDATE,
+  Env: BARNOWL_PORT, BARNOWL_WORK_DIR, BARNOWL_API_KEY, BARNOWL_AUTO_UPDATE, BARNOWL_STATE_DIR,
        BARNOWL_QUEUE_TIMEOUT, BARNOWL_MAX_CONCURRENT, BARNOWL_MAX_QUEUE, BARNOWL_RATE_LIMIT
 `);
   return 0;
@@ -488,6 +574,7 @@ async function main() {
     case "status": return cmdStatus(rest);
     case "verify": return cmdVerify(rest);
     case "models": return cmdModels();
+    case "login": return cmdLogin(rest);
     case "config": {
       if (rest[0] === "init") {
         fs.mkdirSync(CONFIG_HOME, { recursive: true });
