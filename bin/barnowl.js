@@ -16,6 +16,8 @@ const path = require("path");
 const { spawn, spawnSync } = require("child_process");
 const { ensurePatched } = require("../lib/patch-otterly.js");
 const { checkForUpdate } = require("../lib/self-update.js");
+const { stateDir } = require("../lib/model-catalog.cjs");
+const { PATH_KEYS, applyPaths, detectPaths } = require("../lib/paths.cjs");
 
 const PKG = require("../package.json");
 
@@ -35,14 +37,30 @@ const BUILTIN = {
   autoUpdate: "true", // git-clone installs fast-forward to origin/main on start
 };
 
-const STATE_DIR = path.join(os.homedir(), ".barnowl");
-const PID_FILE = path.join(STATE_DIR, "barnowl.pid");
-const LOG_FILE = path.join(STATE_DIR, "barnowl.log");
-const GLOBAL_CONFIG = path.join(STATE_DIR, "config.json");
+// The config file is always looked up in ~/.barnowl; paths.stateDir only moves
+// barnowl's runtime files (pid, log, catalog, images).
+const CONFIG_HOME = path.join(os.homedir(), ".barnowl");
+const GLOBAL_CONFIG = path.join(CONFIG_HOME, "config.json");
+// Set by initPaths() once the config file's `paths` are applied.
+let STATE_DIR;
+let PID_FILE;
+let LOG_FILE;
+let PATHS;
 
 // ── Small helpers ─────────────────────────────────────────────────────────
-/** Find and parse the config file. Returns { path, data } or null. */
+// initPaths() and parseFlags() both load the config; parse (and warn) once.
+const configCache = new Map();
+
+/** Find and parse the config file (memoized). Returns { path, data } or null. */
 function loadConfigFile(explicitPath) {
+  const cacheKey = explicitPath || "";
+  if (configCache.has(cacheKey)) return configCache.get(cacheKey);
+  const found = findConfigFile(explicitPath);
+  configCache.set(cacheKey, found);
+  return found;
+}
+
+function findConfigFile(explicitPath) {
   const candidates = explicitPath
     ? [path.resolve(explicitPath)]
     : [path.join(process.cwd(), "barnowl.config.json"), GLOBAL_CONFIG];
@@ -110,6 +128,16 @@ function parseFlags(argv) {
   // "mcp": false / "none" in the file explicitly disables MCP even if env sets it
   if (out.mcp === "false" || out.mcp === "none") out.mcp = undefined;
   return out;
+}
+
+/** Apply the config file's `paths` (env wins) and derive the runtime file locations. */
+function initPaths(argv) {
+  const i = argv.indexOf("--config");
+  const file = loadConfigFile(i >= 0 ? argv[i + 1] : undefined);
+  PATHS = applyPaths(file && file.data ? file.data.paths : null);
+  STATE_DIR = stateDir();
+  PID_FILE = path.join(STATE_DIR, "barnowl.pid");
+  LOG_FILE = path.join(STATE_DIR, "barnowl.log");
 }
 
 function baseUrl(port) {
@@ -431,6 +459,9 @@ function cmdHelp() {
     ./barnowl.config.json, or ~/.barnowl/config.json
     { "port": 11435, "dir": "...", "mcp": "sheet", ... }  ("mcp": "none" disables)
 
+  Per-user paths (config "paths" block; env vars win; see README "Setup with an AI agent"):
+    claudeBin, codexBin, python, codexHome, claudeKeychainAccount, claudeCredentialsFile, stateDir
+
   Auto-update:
     git-clone installs fast-forward to origin/main on start
     (--no-update, BARNOWL_AUTO_UPDATE=0, or "autoUpdate": false to skip)
@@ -449,6 +480,7 @@ function cmdHelp() {
 // ── Dispatch ─────────────────────────────────────────────────────────────────
 async function main() {
   const [cmd, ...rest] = process.argv.slice(2);
+  initPaths(rest);
   switch (cmd) {
     case "start": return cmdStart(rest);
     case "stop": return cmdStop(rest);
@@ -458,7 +490,7 @@ async function main() {
     case "models": return cmdModels();
     case "config": {
       if (rest[0] === "init") {
-        fs.mkdirSync(STATE_DIR, { recursive: true });
+        fs.mkdirSync(CONFIG_HOME, { recursive: true });
         const target = rest[1] ? path.resolve(rest[1]) : GLOBAL_CONFIG;
         if (fs.existsSync(target)) {
           console.error(`already exists: ${target}`);
@@ -473,9 +505,11 @@ async function main() {
           maxQueue: 50,
           rateLimit: 60,
           autoUpdate: true,
+          paths: Object.fromEntries(Object.entries(detectPaths()).filter(([, v]) => v)),
         };
         fs.writeFileSync(target, JSON.stringify(starter, null, 2) + "\n");
         console.log(`created: ${target}`);
+        console.log("paths were pre-filled by auto-detection — check them (README: Setup with an AI agent)");
         console.log("edit it, then just run: barnowl start");
         return 0;
       }
@@ -489,6 +523,14 @@ async function main() {
           apiKey: cfg.apiKey ? "(set)" : null,
           autoUpdate: cfg.autoUpdate,
           configFile: cfg.configFile,
+          paths: (() => {
+            const detected = detectPaths();
+            return Object.fromEntries(PATH_KEYS.map(({ key }) => {
+              const r = PATHS[key];
+              const value = r.source === "auto" ? detected[key] : r.value;
+              return [key, `${value ?? "(none)"}  [${r.source}]`];
+            }));
+          })(),
         }, null, 2));
       return 0;
     }
