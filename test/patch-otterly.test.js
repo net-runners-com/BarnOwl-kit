@@ -34,6 +34,14 @@ test("routes-openai: sonnet fallback, breaker code, typed stream errors", () => 
   assert.ok(src.includes("sseData(openaiErrorBody(errorToHttpStatus(e), e.message))"));
 });
 
+test("stream loops throw error events (OpenAI + Ollama routes)", () => {
+  for (const rel of ["server/routes-openai.js", "server/routes-ollama.js"]) {
+    const src = read(rel);
+    assert.ok(src.includes("barnowl: surface stream error events"), rel);
+    assert.match(src, /if \(event\.type === "error"\)\n\s+throw event\.error;/, rel);
+  }
+});
+
 test("engine.js: BARNOWL_CLAUDE_BIN wins over the PATH lookup", () => {
   const src = read("engine.js");
   assert.ok(src.includes("barnowl: configured claude binary"));
