@@ -19,6 +19,53 @@ Requires the `claude` CLI on your PATH (Claude Code) and a working login.
 For `gpt-*` models and image generation, also install the `codex` CLI and
 log in with your ChatGPT account (`codex login`).
 
+## Setup with an AI agent
+
+Install paths differ per machine (where `claude` / `codex` / `python3` live,
+which keychain item holds the Claude login, …). They go in the `paths` block
+of `~/.barnowl/config.json`. The steps below are written for an AI coding
+agent (Claude Code, Codex, …): point it at this section and let it configure
+the machine.
+
+> **Agent instructions — configure barnowl's per-user paths**
+>
+> 1. Run `barnowl config init`. It creates `~/.barnowl/config.json` with
+>    `paths` pre-filled by auto-detection. If the file already exists, keep
+>    it and add or merge a `paths` object instead.
+> 2. Check every key in the table below with its command and correct the
+>    value in `paths`. Use absolute paths (`~` is allowed). Remove keys whose
+>    default is right.
+> 3. macOS only: the keychain can hold several `Claude Code-credentials`
+>    items. List them with
+>    `security dump-keychain | grep -B12 '"svce"<blob>="Claude Code-credentials"' | grep -E '"acct"|"mdat"'`
+>    and set `claudeKeychainAccount` to the account whose item was modified
+>    most recently. That is normally the OS username — never `unknown`.
+> 4. Verify:
+>    - `barnowl config` shows each path with `[file]` or `[auto]` and a real value
+>    - `barnowl start` prints `Auth     : claude ok · codex ok`
+>    - `barnowl verify` ends in `OK`
+>
+>    If a login shows `revoked` or `logged_out`, ask the user to run
+>    `barnowl login <provider>` (it opens a browser). Do not log in on their
+>    behalf.
+> 5. Never set `CLAUDE_CONFIG_DIR` for barnowl: Claude Code derives its
+>    keychain item from it, and the CLI would look logged out.
+
+| key | what | find it with | default |
+| --- | --- | --- | --- |
+| `claudeBin` | Claude Code CLI | `which claude` | `claude` on PATH |
+| `codexBin` | Codex CLI | `which codex` | common install dirs, then PATH |
+| `python` | Python 3 for image generation | `which python3` | `python3` |
+| `codexHome` | Codex data dir (login, model cache) | `echo ${CODEX_HOME:-$HOME/.codex}` | `~/.codex` |
+| `claudeKeychainAccount` | keychain account of the Claude login (macOS) | step 3 | OS username |
+| `claudeCredentialsFile` | Claude credentials file (Linux / Windows) | `ls ~/.claude/.credentials.json` | `~/.claude/.credentials.json` |
+| `stateDir` | barnowl's catalog, pid, log, images | — | `~/.barnowl` |
+
+Each key can also be set by an env var, which wins over the file:
+`BARNOWL_CLAUDE_BIN`, `BARNOWL_CODEX_BIN`, `BARNOWL_PYTHON`, `CODEX_HOME`,
+`BARNOWL_CLAUDE_KEYCHAIN_ACCOUNT`, `BARNOWL_CLAUDE_CREDENTIALS_FILE`,
+`BARNOWL_STATE_DIR`.
+
 ## Usage
 
 ```bash
@@ -30,7 +77,8 @@ barnowl verify                # end-to-end check + latency
 barnowl status                # health JSON
 barnowl stop
 barnowl restart
-barnowl models                # list usable model names
+barnowl models                # live model list per login
+barnowl login [claude|codex]  # re-login after a revoked / expired login (no restart)
 ```
 
 **Auto-update.** When barnowl runs from a git clone, every `start` (and
@@ -74,9 +122,24 @@ Retired: `claude-fable-5` (now refuses even trivial prompts — use `fable` /
 `claude-fable-5-1`) and `gpt-5.6-sol` / `gpt-5.4` / `gpt-5.4-mini` (the
 ChatGPT backend answers 400 "not supported").
 
-`barnowl models` lists every id in `config/models.json`. `GET /v1/models`
-advertises the discovery subset (legacy Claude ids + all Codex ids); ids that
-are not advertised still work — the id is passed through to the CLI verbatim.
+**Live model list.** Every `barnowl start` asks the Claude and Codex backends
+which models your logins can use (with the tokens the `claude` / `codex` CLIs
+already hold) and saves the answer to `~/.barnowl/catalog.json`. `GET
+/v1/models`, `/api/tags` and `barnowl models` serve that list: the Claude
+aliases (`sonnet`, `opus`, `haiku`, `fable`, `default`), every Claude model the
+API returns (plus a `[1m]` variant for 1M-context models, minus the retired ids
+above), and the Codex models your ChatGPT account lists. If the Claude token
+has expired, `start` first runs one tiny `claude -p` (haiku) so the CLI
+refreshes it. Offline or unreadable credentials keep the previous list. Ids
+that are not advertised still work — the id is passed through to the CLI
+verbatim.
+
+**Revoked logins.** When a login stops working (revoked, expired, signed out),
+requests for that provider answer HTTP 401 with the fix, its models leave
+`/v1/models`, and `barnowl status` shows it. Run `barnowl login claude` or
+`barnowl login codex`; the running server picks the new login up without a
+restart. A login fixed elsewhere (e.g. in Claude Code itself) is noticed by
+the next successful request.
 
 **Reasoning effort** — append `:<effort>` to any model id, or send the
 OpenAI `reasoning_effort` field:

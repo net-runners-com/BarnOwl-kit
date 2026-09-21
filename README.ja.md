@@ -19,6 +19,51 @@ PATH 上に `claude` CLI（Claude Code）とログイン済みの環境が必要
 `gpt-*` モデルと画像生成を使う場合は `codex` CLI も入れて ChatGPT
 アカウントでログインしてください（`codex login`）。
 
+## AI エージェントでのセットアップ
+
+`claude` / `codex` / `python3` の場所や、Claude のログインが入っている
+キーチェーン項目は環境ごとに違います。これらは `~/.barnowl/config.json` の
+`paths` に書きます。以下は AI コーディングエージェント（Claude Code、Codex
+など）向けの手順です。エージェントにこの節を読ませて設定させてください。
+
+> **エージェントへの指示 — barnowl のパス設定**
+>
+> 1. `barnowl config init` を実行する。自動検出で `paths` を埋めた
+>    `~/.barnowl/config.json` ができる。既にファイルがある場合はそれを残し、
+>    `paths` オブジェクトを追加・マージする。
+> 2. 下の表の各キーを確認コマンドで調べ、`paths` の値を直す。絶対パスで書く
+>    （`~` は可）。既定値で正しいキーは消してよい。
+> 3. macOS のみ: キーチェーンに `Claude Code-credentials` が複数あることがある。
+>    `security dump-keychain | grep -B12 '"svce"<blob>="Claude Code-credentials"' | grep -E '"acct"|"mdat"'`
+>    で一覧し、更新日時（mdat）が最も新しい項目の acct を
+>    `claudeKeychainAccount` に設定する。通常は OS のユーザー名で、`unknown`
+>    は選ばない。
+> 4. 確認:
+>    - `barnowl config` で各パスが `[file]` か `[auto]` で実在の値になっている
+>    - `barnowl start` が `Auth     : claude ok · codex ok` を表示する
+>    - `barnowl verify` が `OK` で終わる
+>
+>    ログインが `revoked` / `logged_out` なら、ユーザーに
+>    `barnowl login <provider>` の実行を頼む（ブラウザが開く）。代わりに
+>    ログインはしない。
+> 5. barnowl のために `CLAUDE_CONFIG_DIR` を設定しない。Claude Code は
+>    これからキーチェーン項目名を決めるので、CLI が未ログイン扱いになる。
+
+| キー | 内容 | 調べ方 | 既定値 |
+| --- | --- | --- | --- |
+| `claudeBin` | Claude Code CLI | `which claude` | PATH 上の `claude` |
+| `codexBin` | Codex CLI | `which codex` | よくあるインストール先 → PATH |
+| `python` | 画像生成用 Python 3 | `which python3` | `python3` |
+| `codexHome` | Codex のデータ（ログイン・モデルキャッシュ） | `echo ${CODEX_HOME:-$HOME/.codex}` | `~/.codex` |
+| `claudeKeychainAccount` | Claude ログインのキーチェーン acct（macOS） | 手順 3 | OS ユーザー名 |
+| `claudeCredentialsFile` | Claude 認証ファイル（Linux / Windows） | `ls ~/.claude/.credentials.json` | `~/.claude/.credentials.json` |
+| `stateDir` | barnowl のカタログ・pid・ログ・画像 | — | `~/.barnowl` |
+
+各キーは環境変数でも指定できます（ファイルより優先）:
+`BARNOWL_CLAUDE_BIN`、`BARNOWL_CODEX_BIN`、`BARNOWL_PYTHON`、`CODEX_HOME`、
+`BARNOWL_CLAUDE_KEYCHAIN_ACCOUNT`、`BARNOWL_CLAUDE_CREDENTIALS_FILE`、
+`BARNOWL_STATE_DIR`。
+
 ## 使い方
 
 ```bash
@@ -30,7 +75,8 @@ barnowl verify                # エンドツーエンド確認 + レイテンシ
 barnowl status                # ヘルスチェック（JSON）
 barnowl stop
 barnowl restart
-barnowl models                # 使えるモデル名の一覧
+barnowl models                # ログインごとの実モデル一覧
+barnowl login [claude|codex]  # revoke / 期限切れ後の再ログイン（再起動不要）
 ```
 
 **自動アップデート** — git クローンから動かしている場合、`start`（と
@@ -73,9 +119,22 @@ curl http://localhost:11435/v1/chat/completions \
 `claude-fable-5-1` を使う）、`gpt-5.6-sol` / `gpt-5.4` / `gpt-5.4-mini`
 （ChatGPT バックエンドが 400 "not supported" を返す）。
 
-`barnowl models` は `config/models.json` の全 ID を表示します。`GET /v1/models`
-が広告するのはディスカバリ用のサブセット（旧 Claude ID + Codex 系すべて）で、
-そこに載っていない ID もそのまま CLI に渡るため問題なく利用できます。
+**モデル一覧の自動更新** — `barnowl start` のたびに、`claude` / `codex` CLI が
+持っているトークンで Claude と Codex のモデル一覧 API を叩き、結果を
+`~/.barnowl/catalog.json` に保存します。`GET /v1/models`・`/api/tags`・
+`barnowl models` はこの一覧を返します。中身は Claude のエイリアス（`sonnet`
+`opus` `haiku` `fable` `default`）、API が返す全 Claude モデル（1M 対応モデルは
+`[1m]` 版も追加、上記の廃止 ID は除外）、ChatGPT アカウントで使える Codex
+モデルです。Claude のトークンが期限切れのときは、先に `claude -p`（haiku）を
+1 回だけ流して CLI に更新させます。オフラインや認証情報が読めない場合は前回の
+一覧を使います。一覧にない ID もそのまま CLI に渡るので利用できます。
+
+**ログインが revoke されたとき** — ログインが無効になると（revoke・期限切れ・
+ログアウト）、そのプロバイダへのリクエストは HTTP 401 と対処法を返し、モデルは
+`/v1/models` から消え、`barnowl status` に表示されます。`barnowl login claude`
+または `barnowl login codex` を実行すれば、動いているサーバーが再起動なしで
+新しいログインを拾います。Claude Code など barnowl の外で直した場合も、次に
+成功したリクエストで自動的に元に戻ります。
 
 **推論 effort** — モデル ID に `:<effort>` を付けるか、OpenAI の
 `reasoning_effort` フィールドで指定:
