@@ -31,9 +31,20 @@ revoked provider, refreshing OAuth tokens ourselves, touching the stale
 
 ## Components
 
-### `lib/model-catalog.cjs` (new)
+### Modules (new)
 
-Shared by the CLI and the server. Every I/O dependency (fetch, spawn, keychain
+Split three ways to avoid require cycles with `codex-engine.cjs`:
+
+- `lib/auth-errors.cjs`: pure helpers `isAuthError`, `authMessage`, `authError`.
+- `lib/model-catalog.cjs`: discovery and catalog-file I/O. The CLI uses it.
+- `lib/auth-state.cjs`: the "Runtime state" below, loaded inside the server.
+
+The state dir is `$BARNOWL_STATE_DIR`, else `~/.barnowl`. It holds the
+catalog, pid and log, so an isolated E2E server can run beside the real one.
+
+### `lib/model-catalog.cjs`
+
+Every I/O dependency (fetch, spawn, keychain
 reader, file paths, clock) is injectable for tests. Never throws to callers.
 
 **Catalog file** `~/.barnowl/catalog.json` (outside the repo so auto-update's
@@ -57,7 +68,8 @@ clean-tree check is unaffected; written atomically via tmp + rename):
 **Refresh** `refreshCatalog()` — both providers in parallel:
 
 - Claude
-  - no credential → `logged_out`
+  - no credential → `logged_out` if `claude auth status --json` says
+    `loggedIn: false`, else `unknown`
   - token expired → probe first: `claude -p ok --model haiku` with
     `--output-format stream-json --verbose --strict-mcp-config
     --setting-sources ""` (30 s cap). The CLI refreshes the token as a side
@@ -65,10 +77,11 @@ clean-tree check is unaffected; written atomically via tmp + rename):
     the credential and continue.
   - fetch (5 s) → 200 `ok` · 401 `revoked` · anything else `unknown`.
 - Codex
-  - no `auth.json` / no tokens → `logged_out`
+  - no `auth.json` / no tokens → `logged_out` if `codex login status` exits
+    non-zero, else `unknown`
   - token expired → `unknown`, keep previous models (the first real request
     refreshes it; the token lives ~10 days)
-  - fetch (5 s) → 200 `ok` · 401/403 `revoked` · else `unknown`.
+  - fetch (5 s) → 200 `ok` · 401 `revoked` · else `unknown`.
 
 **Building the lists**
 
@@ -103,7 +116,7 @@ clean-tree check is unaffected; written atomically via tmp + rename):
 
 Same marker/anchor mechanism as today.
 
-1. **`server/models.js` — live catalog.** Import `lib/model-catalog.cjs` via
+1. **`server/models.js` — live catalog.** Import `lib/auth-state.cjs` via
    `createRequire` (as the warm pool does) and call `bind(MODELS)` before
    `findModel`. Anchor chosen to survive the hand-edited copy on this machine.
 2. **`events.js` — `is_error` results are errors.** `result` with
@@ -116,11 +129,13 @@ Same marker/anchor mechanism as today.
 3. **`routes-openai.js` — breaker code for non-otterly errors.** The
    `err instanceof AgentError ? err.code : undefined` sites also honour
    `err.barnowlCode`, so Codex auth errors do not trip the circuit breaker.
-4. **`routes-openai.js` — streaming errors.** When SSE headers are already
-   sent, write an OpenAI-style `data: {"error": {…}}` chunk and `data: [DONE]`
-   before ending instead of closing silently. (Needed now that `is_error`
-   results no longer arrive as content.)
-5. **PR #1 folded in** (cherry-picked, PR closed as superseded):
+4. **`routes-openai.js` — typed stream errors.** Upstream already sends a
+   `data: {"error": …}` chunk + `[DONE]` when a stream fails, but always as
+   `server_error`; use `openaiErrorBody(errorToHttpStatus(e), …)` so a dead
+   login streams `authentication_error` (code 401).
+5. **PR #1 folded in** (re-implemented on the current patch layout — the
+   branch predates the Codex migration and does not cherry-pick; PR closed as
+   superseded):
    `DEFAULT_MODEL = "sonnet"`, the `body.model ||` fallback → `sonnet`
    (including a migration for the already-patched effort line), and the
    refreshed static list used when no catalog exists yet.
@@ -132,7 +147,9 @@ Auth message (used for both providers):
 
 ### `lib/warm-sessions.cjs`, `lib/codex-engine.cjs`, `lib/image-gen.cjs`
 
-- Warm pool: same `is_error` / auth handling as the `events.js` patch.
+- Warm pool: a failed turn already falls back to the one-shot `--resume`
+  path, where the `events.js` patch produces the 401; the pool only reports
+  `onAuthSuccess("claude")` on a good turn.
 - Codex engine + image gen: on non-zero exit with `isAuthError(stderr)` →
   throw the auth message with `barnowlCode = "NOT_AUTHENTICATED"` and call
   `onAuthFailure("codex")`; on exit 0 call `onAuthSuccess("codex")`.
