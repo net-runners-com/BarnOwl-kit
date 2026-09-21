@@ -176,6 +176,36 @@ Revoked providers are still routed to their CLI, so a login fixed outside
 barnowl (e.g. in Claude Code itself) is noticed by the next successful request.
 The cost is a few seconds per failing request.
 
+### Per-user paths (`lib/paths.cjs`, config `paths`)
+
+Binary locations and data dirs differ per machine, so they live in the existing
+config file (`./barnowl.config.json` or `~/.barnowl/config.json`) under
+`paths`. Precedence: env var > config file > auto-detection. `~` is expanded.
+
+| key | env var | auto-detected default | used by |
+| --- | --- | --- | --- |
+| `claudeBin` | `BARNOWL_CLAUDE_BIN` | `claude` on PATH | otterly (new `findClaudeCLI` patch), warm pool, probe, `login` |
+| `codexBin` | `BARNOWL_CODEX_BIN` | codex-engine's search (`~/.superset/bin`, `/opt/homebrew/bin`, `/usr/local/bin`, …, PATH) | Codex engine, image gen, `login` |
+| `python` | `BARNOWL_PYTHON` | `python3` | image generation (`vendor/codex-image`) |
+| `codexHome` | `CODEX_HOME` | `~/.codex` | Codex credential + model cache |
+| `claudeKeychainAccount` | `BARNOWL_CLAUDE_KEYCHAIN_ACCOUNT` | OS username | macOS keychain lookup |
+| `claudeCredentialsFile` | `BARNOWL_CLAUDE_CREDENTIALS_FILE` | `~/.claude/.credentials.json` | non-macOS credential lookup |
+| `stateDir` | `BARNOWL_STATE_DIR` | `~/.barnowl` | catalog, pid, log, generated images |
+
+The CLI loads the config file first thing and exports each file value to its
+env var (unless the env var is already set), so the server and every module
+see one set of values. `CLAUDE_CONFIG_DIR` is deliberately not set: Claude
+Code derives its keychain item name from it, so even setting it to the default
+would make the CLI look logged out.
+
+- `barnowl config` prints each path's effective value and source
+  (`env` / `file` / `auto`).
+- `barnowl config init` writes the starter file with `paths` pre-filled from
+  auto-detection.
+- README (EN/JA) gets a "Setup with an AI agent" section: the commands an agent
+  runs to find each value (`which`, keychain account check, `CODEX_HOME`), how
+  to write `paths`, and how to verify (`barnowl config`, `start`, `verify`).
+
 ## Testing
 
 `test/model-catalog.test.js` (`node:test`, fixtures + injected I/O):

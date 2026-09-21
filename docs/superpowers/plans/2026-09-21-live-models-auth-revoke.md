@@ -4,7 +4,7 @@
 
 **Goal:** `barnowl start` refreshes `/v1/models` from the live Claude/Codex model APIs, and a revoked login yields HTTP 401 + hidden models + `barnowl login` recovery instead of a 200 whose content is the error text.
 
-**Architecture:** Three new CommonJS modules. `lib/auth-errors.cjs` is pure classification. `lib/model-catalog.cjs` handles discovery and the catalog file; the CLI uses it. `lib/auth-state.cjs` is the server runtime: it binds otterly's `MODELS` array to the catalog and records auth failures/successes. New otterly text patches (same marker/anchor mechanism as today) load `auth-state` into `server/models.js` and `events.js`. The Codex engine, image gen and warm pool report through `auth-state`. The CLI gains the refresh on start, `login`, and the auth/status/model printouts.
+**Architecture:** Three new CommonJS modules. `lib/auth-errors.cjs` is pure classification. `lib/model-catalog.cjs` handles discovery and the catalog file; the CLI uses it. `lib/auth-state.cjs` is the server runtime: it binds otterly's `MODELS` array to the catalog and records auth failures/successes. `lib/paths.cjs` maps the config file's per-user `paths` block to env vars. New otterly text patches (same marker/anchor mechanism as today) load `auth-state` into `server/models.js` and `events.js`. The Codex engine, image gen and warm pool report through `auth-state`. The CLI gains the refresh on start, `login`, and the auth/status/model printouts.
 
 **Tech Stack:** Node ≥ 18 (global `fetch`, `AbortSignal.timeout`), CommonJS, `node:test`, otterly 0.8.0 (ESM dist patched in place).
 
@@ -21,6 +21,7 @@
 - Only HTTP 401 from a model-list API counts as `revoked`. Every other non-200 response is `unknown`.
 - Patches must be idempotent (marker check) and must never edit a global otterly install.
 - No desktop notifications.
+- Per-user paths: env var > config `paths` > auto-detection. Never set `CLAUDE_CONFIG_DIR` (Claude Code derives its keychain item from it).
 - Commit messages: imperative, as in `git log`. Every commit ends with `Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>`.
 - Run tests with `npm test` (`node --test test/*.test.js`).
 
@@ -30,12 +31,13 @@
 | --- | --- |
 | `lib/auth-errors.cjs` (new) | `isAuthError(text)`, `authMessage(p)`, `authError(p)`, `NAMES` |
 | `lib/model-catalog.cjs` (new) | state dir / catalog file I/O, `markStatus`, list builders, credential readers, model-list fetchers, Claude probe, `refreshCatalog`, `summarize` |
+| `lib/paths.cjs` (new) | per-user `paths` config → env vars, `~` expansion, auto-detection |
 | `lib/auth-state.cjs` (new) | `bind(MODELS)`, `onAuthFailure`, `onAuthSuccess`, `statusOf`, `_reset` |
-| `lib/patch-otterly.js` | new patches: models.js (static list, DEFAULT_MODEL, live catalog), events.js (is_error, synthetic text), routes-openai.js (model fallback, breaker code, stream error type) |
+| `lib/patch-otterly.js` | new patches: engine.js (`BARNOWL_CLAUDE_BIN`), models.js (static list, DEFAULT_MODEL, live catalog), events.js (is_error, synthetic text), routes-openai.js (model fallback, breaker code, stream error type) |
 | `lib/codex-engine.cjs`, `lib/image-gen.cjs`, `lib/warm-sessions.cjs` | report auth failure / success |
 | `bin/barnowl.js` | state dir from `model-catalog`, refresh + summary on start, `login`, auth block in `status`, live `models`, help |
-| `test/auth-errors.test.js`, `test/model-catalog.test.js`, `test/auth-state.test.js`, `test/patch-otterly.test.js`, `test/codex-auth.test.js` (new) | tests |
-| `README.md`, `README.ja.md` | usage + live list / revoked login docs |
+| `test/auth-errors.test.js`, `test/model-catalog.test.js`, `test/auth-state.test.js`, `test/patch-otterly.test.js`, `test/codex-auth.test.js`, `test/paths.test.js` (new) | tests |
+| `README.md`, `README.ja.md` | usage, live list / revoked login docs, "Setup with an AI agent" |
 
 ---
 
@@ -457,7 +459,7 @@ Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>"
 **Interfaces:**
 - Consumes: `isAuthError` from `lib/auth-errors.cjs` (Task 1). Catalog helpers from Task 2.
 - Produces:
-  - `readClaudeCredential(opts?) → { token, expiresAt: number|null, source: "env"|"keychain"|"file" } | null`. `opts`: `{ env, platform, account, home, keychain(account) → string|null, readFile(p) → string }`
+  - `readClaudeCredential(opts?) → { token, expiresAt: number|null, source: "env"|"keychain"|"file" } | null`. `opts`: `{ env, platform, account, home, keychain(account) → string|null, readFile(p) → string }`. `account` defaults to `$BARNOWL_CLAUDE_KEYCHAIN_ACCOUNT` or the OS user; the file to `$BARNOWL_CLAUDE_CREDENTIALS_FILE` or `~/.claude/.credentials.json`
   - `readCodexCredential(opts?) → { accessToken, accountId, expiresAt: number|null } | null`. `opts`: `{ home, readFile }`
   - `jwtExpiry(token) → number|null` (ms)
   - `fetchClaudeModels(token, { fetchImpl, timeoutMs, deprecatedIds }?) → Promise<Result>`
@@ -515,6 +517,18 @@ test("readClaudeCredential: keychain entry for the OS user, then the file fallba
     env: {}, platform: "darwin", account: "alice", home: "/h",
     keychain: () => null, readFile: () => { throw new Error("ENOENT"); },
   }), null);
+});
+
+test("readClaudeCredential: keychain account / credentials file overridable (config paths)", () => {
+  const blob = JSON.stringify({ claudeAiOauth: { accessToken: "x", expiresAt: 1 } });
+  let account;
+  let read;
+  mc.readClaudeCredential({ env: { BARNOWL_CLAUDE_KEYCHAIN_ACCOUNT: "bob" }, platform: "darwin", home: "/h",
+    keychain: (a) => { account = a; return blob; } });
+  assert.equal(account, "bob");
+  mc.readClaudeCredential({ env: { BARNOWL_CLAUDE_CREDENTIALS_FILE: "/etc/creds.json" }, platform: "linux", home: "/h",
+    readFile: (p) => { read = p; return blob; } });
+  assert.equal(read, "/etc/creds.json");
 });
 
 test("readCodexCredential: tokens + JWT expiry; missing → null", () => {
@@ -721,7 +735,8 @@ function parseClaudeBlob(raw, source) {
 }
 
 function readClaudeCredential({
-  env = process.env, platform = process.platform, account = safeUsername(), home = os.homedir(),
+  env = process.env, platform = process.platform,
+  account = env.BARNOWL_CLAUDE_KEYCHAIN_ACCOUNT || safeUsername(), home = os.homedir(),
   keychain = readKeychain, readFile = (p) => fs.readFileSync(p, "utf8"),
 } = {}) {
   if (env.CLAUDE_CODE_OAUTH_TOKEN) return { token: env.CLAUDE_CODE_OAUTH_TOKEN, expiresAt: null, source: "env" };
@@ -730,8 +745,9 @@ function readClaudeCredential({
     if (cred) return cred;
   }
   try {
-    const dir = env.CLAUDE_CONFIG_DIR || path.join(home, ".claude");
-    return parseClaudeBlob(readFile(path.join(dir, ".credentials.json")), "file");
+    const file = env.BARNOWL_CLAUDE_CREDENTIALS_FILE
+      || path.join(env.CLAUDE_CONFIG_DIR || path.join(home, ".claude"), ".credentials.json");
+    return parseClaudeBlob(readFile(file), "file");
   } catch (_) {
     return null;
   }
@@ -1000,7 +1016,7 @@ module.exports = {
 - [ ] **Step 4: Run tests to verify they pass**
 
 Run: `node --test test/model-catalog.test.js`
-Expected: PASS (20 tests)
+Expected: PASS (21 tests)
 
 - [ ] **Step 5: Smoke-test against the live APIs** (scratch state dir, real logins)
 
@@ -1255,7 +1271,7 @@ Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>"
 **Interfaces:**
 - Consumes: `bind`, `onAuthFailure`, `onAuthSuccess` (Task 4). `isAuthError`, `authMessage` (Task 1).
 - Produces:
-  - Patched otterly: `server/models.js` binds `MODELS`. `events.js` turns `is_error` results into `error` events (auth → `AgentError("NOT_AUTHENTICATED", authMessage("claude"))`) and drops assistant events carrying `error`. `routes-openai.js` falls back to `sonnet`, honours `err.barnowlCode` for the breaker, and gives stream error chunks their real type.
+  - Patched otterly: `engine.js` `findClaudeCLI()` returns `$BARNOWL_CLAUDE_BIN` when set. `server/models.js` binds `MODELS`. `events.js` turns `is_error` results into `error` events (auth → `AgentError("NOT_AUTHENTICATED", authMessage("claude"))`) and drops assistant events carrying `error`. `routes-openai.js` falls back to `sonnet`, honours `err.barnowlCode` for the breaker, and gives stream error chunks their real type.
   - `ensurePatched()` keeps its return contract.
 
 Background the implementer needs: `applyPatch(file, marker, anchor, replacement)` inserts once, keyed on `marker`. `applyPatchAll` replaces every occurrence. `migrateBlock(file, from, to)` upgrades a block an older barnowl already wrote. The live `server/models.js` on the dev machine was hand-edited, which is why the anchors below also match it. Upstream's first catalog lines are `    { id: "claude-opus-4-20250514", label: "Claude Opus 4", contextWindow: 200000 },` / `claude-sonnet-4-20250514` / `claude-3-5-haiku-20241022`, in that order, and the existing Codex patch appends after the haiku line.
@@ -1295,6 +1311,12 @@ test("routes-openai: sonnet fallback, breaker code, typed stream errors", () => 
   assert.ok(src.includes("(err && err.barnowlCode) || undefined"));
   assert.ok(!src.includes('type: "server_error" } })'));
   assert.ok(src.includes("sseData(openaiErrorBody(errorToHttpStatus(e), e.message))"));
+});
+
+test("engine.js: BARNOWL_CLAUDE_BIN wins over the PATH lookup", () => {
+  const src = read("engine.js");
+  assert.ok(src.includes("barnowl: configured claude binary"));
+  assert.ok(src.includes("if (process.env.BARNOWL_CLAUDE_BIN) {"));
 });
 
 test("models.js: sonnet default and the live-catalog hook", () => {
@@ -1513,6 +1535,24 @@ const BREAKER_CODE_REPLACE = "const code = err instanceof AgentError ? err.code 
 const STREAM_ERROR_MARKER = "sseData(openaiErrorBody(errorToHttpStatus(e), e.message))";
 const STREAM_ERROR_FIND = 'sseData({ error: { message: e.message, type: "server_error" } })';
 const STREAM_ERROR_REPLACE = "sseData(openaiErrorBody(errorToHttpStatus(e), e.message))";
+
+// ── engine.js patch: honour BARNOWL_CLAUDE_BIN (config paths.claudeBin) ─────
+// Upstream only looks up `claude` / `claude-code` on PATH. The value is
+// embedded in a shell command string, so a path with spaces is double-quoted.
+const CLAUDE_BIN_MARKER = "barnowl: configured claude binary";
+const CLAUDE_BIN_ANCHOR = [
+  "function findClaudeCLI() {",
+  '    for (const bin of ["claude", "claude-code"]) {',
+].join("\n");
+const CLAUDE_BIN_REPLACEMENT = [
+  "function findClaudeCLI() {",
+  "    // barnowl: configured claude binary",
+  "    if (process.env.BARNOWL_CLAUDE_BIN) {",
+  "        const p = process.env.BARNOWL_CLAUDE_BIN;",
+  "        return /\\s/.test(p) ? '\"' + p + '\"' : p;",
+  "    }",
+  '    for (const bin of ["claude", "claude-code"]) {',
+].join("\n");
 ```
 
 - [ ] **Step 4: Wire them into `ensurePatched()`**
@@ -1549,6 +1589,9 @@ with:
   // routes-openai.js: breaker honours barnowlCode; typed stream error chunks.
   const breakerCodeResult = applyPatchAll(routes, BREAKER_CODE_MARKER, BREAKER_CODE_FIND, BREAKER_CODE_REPLACE);
   const streamErrorResult = applyPatchAll(routes, STREAM_ERROR_MARKER, STREAM_ERROR_FIND, STREAM_ERROR_REPLACE);
+
+  // engine.js: configured claude binary (paths.claudeBin → BARNOWL_CLAUDE_BIN).
+  const claudeBinResult = applyPatch(engine, CLAUDE_BIN_MARKER, CLAUDE_BIN_ANCHOR, CLAUDE_BIN_REPLACEMENT);
 ```
 
 After the `effortSuffixMigrateResult` line, add:
@@ -1566,7 +1609,7 @@ Extend `results`:
     codexImportResult, codexEngineResult, codexModelsMigrateResult, codexModelsResult,
     claudeStaticResult, defaultModelResult, liveCatalogResult,
     eventsImportResult, eventsResultResult, eventsSyntheticResult,
-    breakerCodeResult, streamErrorResult,
+    breakerCodeResult, streamErrorResult, claudeBinResult,
     imagesImportResult, imagesFormatResult, imagesDispatchResult, imagesTimeoutResult,
     toolsResult, usageResult, usageDetailsResult,
     effortEngineResult, effortParseResult, effortSuffixMigrateResult, modelFallbackMigrateResult, effortSetResult,
@@ -1783,6 +1826,20 @@ with:
       : err && err.barnowlCode === "NOT_AUTHENTICATED" ? 401 : 500;
 ```
 
+Also in `lib/image-gen.cjs` (config paths): replace
+
+```js
+const IMAGES_DIR = path.join(os.homedir(), ".barnowl", "images");
+```
+
+with
+
+```js
+const IMAGES_DIR = path.join(require("./model-catalog.cjs").stateDir(), "images");
+```
+
+and in `runGenerateScript` replace `const child = spawn("python3", args, {` with `const child = spawn(process.env.BARNOWL_PYTHON || "python3", args, {`. Update the header's "Response" paragraph: `~/.barnowl/images/` → `<state dir>/images/`.
+
 - [ ] **Step 7: Warm pool hook** — `lib/warm-sessions.cjs`
 
 Below `const path = require("path");` add:
@@ -1824,30 +1881,319 @@ Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>"
 
 ---
 
-### Task 7: CLI — refresh on start, `login`, `status`, `models`, help (`bin/barnowl.js`)
+### Task 7: Per-user paths (`lib/paths.cjs`, config `paths`)
+
+**Files:**
+- Create: `lib/paths.cjs`
+- Modify: `bin/barnowl.js` (state dir + config wiring, `config` / `config init` output, help)
+- Test: `test/paths.test.js`
+
+**Interfaces:**
+- Consumes: `stateDir()` (Task 2). `CODEX_BIN` from `lib/codex-engine.cjs` (lazily).
+- Produces:
+  - `PATH_KEYS: { key, env }[]` — `claudeBin/BARNOWL_CLAUDE_BIN`, `codexBin/BARNOWL_CODEX_BIN`, `python/BARNOWL_PYTHON`, `codexHome/CODEX_HOME`, `claudeKeychainAccount/BARNOWL_CLAUDE_KEYCHAIN_ACCOUNT`, `claudeCredentialsFile/BARNOWL_CLAUDE_CREDENTIALS_FILE`, `stateDir/BARNOWL_STATE_DIR`
+  - `expandHome(p, home?) → string`
+  - `applyPaths(filePaths, env = process.env, home?) → { [key]: { value: string|null, source: "env"|"file"|"auto" } }`. Exports each file value to its env var unless the env var is already set.
+  - `detectPaths({ home, platform }?) → { [key]: string|null }`
+  - `bin/barnowl.js`: `initPaths(argv)` runs first in `main()`. It sets the module-level `STATE_DIR`, `PID_FILE`, `LOG_FILE`, `PATHS`.
+
+- [ ] **Step 1: Write the failing test** — `test/paths.test.js`
+
+```js
+"use strict";
+const test = require("node:test");
+const assert = require("node:assert/strict");
+const path = require("path");
+const { PATH_KEYS, expandHome, applyPaths, detectPaths } = require("../lib/paths.cjs");
+
+test("expandHome: leading ~ only", () => {
+  assert.equal(expandHome("~/x/y", "/home/u"), "/home/u/x/y");
+  assert.equal(expandHome("~", "/home/u"), "/home/u");
+  assert.equal(expandHome("/a/~b", "/home/u"), "/a/~b");
+  assert.equal(expandHome("~other/x", "/home/u"), "~other/x");
+});
+
+test("applyPaths: env wins, file values exported (~ expanded), the rest auto", () => {
+  const env = { BARNOWL_CODEX_BIN: "/env/codex" };
+  const out = applyPaths({
+    codexBin: "/file/codex",
+    claudeBin: "~/bin/claude",
+    claudeKeychainAccount: "~literal",
+    stateDir: "",
+  }, env, "/home/u");
+  assert.deepEqual(out.codexBin, { value: "/env/codex", source: "env" });
+  assert.equal(env.BARNOWL_CODEX_BIN, "/env/codex");
+  assert.deepEqual(out.claudeBin, { value: "/home/u/bin/claude", source: "file" });
+  assert.equal(env.BARNOWL_CLAUDE_BIN, "/home/u/bin/claude");
+  assert.deepEqual(out.claudeKeychainAccount, { value: "~literal", source: "file" }); // not a path
+  assert.deepEqual(out.stateDir, { value: null, source: "auto" });
+  assert.equal(env.BARNOWL_STATE_DIR, undefined);
+  assert.deepEqual(Object.keys(out), PATH_KEYS.map((k) => k.key));
+});
+
+test("applyPaths: missing or non-object paths block → all auto, env untouched", () => {
+  const env = {};
+  const out = applyPaths(undefined, env, "/home/u");
+  assert.ok(Object.values(out).every((r) => r.source === "auto" && r.value === null));
+  assert.deepEqual(env, {});
+});
+
+test("detectPaths: fixed defaults per platform", () => {
+  const mac = detectPaths({ home: "/Users/u", platform: "darwin" });
+  assert.equal(mac.codexHome, path.join("/Users/u", ".codex"));
+  assert.equal(mac.stateDir, path.join("/Users/u", ".barnowl"));
+  assert.equal(mac.claudeCredentialsFile, null);
+  assert.equal(typeof mac.claudeKeychainAccount, "string");
+  const linux = detectPaths({ home: "/home/u", platform: "linux" });
+  assert.equal(linux.claudeKeychainAccount, null);
+  assert.equal(linux.claudeCredentialsFile, path.join("/home/u", ".claude", ".credentials.json"));
+  for (const k of ["claudeBin", "codexBin", "python"]) {
+    assert.ok(mac[k] === null || path.isAbsolute(mac[k]), `${k}: ${mac[k]}`);
+  }
+});
+```
+
+- [ ] **Step 2: Run test to verify it fails**
+
+Run: `node --test test/paths.test.js`
+Expected: FAIL — `Cannot find module '../lib/paths.cjs'`
+
+- [ ] **Step 3: Write the implementation** — `lib/paths.cjs`
+
+```js
+"use strict";
+/**
+ * Per-user paths. Binary locations and data dirs differ per machine; they can
+ * be set in the config file's `paths` block (README: "Setup with an AI agent").
+ * Each key maps to the env var the rest of barnowl (and the spawned server)
+ * reads. Precedence: env var > config file > auto-detection.
+ *
+ * CLAUDE_CONFIG_DIR is deliberately not among them: Claude Code derives its
+ * keychain item name from it, so setting it — even to the default — would make
+ * the CLI look logged out.
+ */
+const os = require("os");
+const path = require("path");
+const { spawnSync } = require("child_process");
+
+const PATH_KEYS = [
+  { key: "claudeBin", env: "BARNOWL_CLAUDE_BIN" },
+  { key: "codexBin", env: "BARNOWL_CODEX_BIN" },
+  { key: "python", env: "BARNOWL_PYTHON" },
+  { key: "codexHome", env: "CODEX_HOME" },
+  { key: "claudeKeychainAccount", env: "BARNOWL_CLAUDE_KEYCHAIN_ACCOUNT" },
+  { key: "claudeCredentialsFile", env: "BARNOWL_CLAUDE_CREDENTIALS_FILE" },
+  { key: "stateDir", env: "BARNOWL_STATE_DIR" },
+];
+const NOT_A_PATH = new Set(["claudeKeychainAccount"]);
+
+function expandHome(p, home = os.homedir()) {
+  return String(p).replace(/^~(?=$|[\\/])/, home);
+}
+
+/** Export file-provided paths to their env vars (an already-set env var wins). */
+function applyPaths(filePaths, env = process.env, home = os.homedir()) {
+  const fromFile = filePaths && typeof filePaths === "object" ? filePaths : {};
+  const out = {};
+  for (const { key, env: name } of PATH_KEYS) {
+    if (env[name]) {
+      out[key] = { value: env[name], source: "env" };
+      continue;
+    }
+    const v = fromFile[key];
+    if (v === undefined || v === null || v === "") {
+      out[key] = { value: null, source: "auto" };
+      continue;
+    }
+    const value = NOT_A_PATH.has(key) ? String(v) : expandHome(v, home);
+    env[name] = value;
+    out[key] = { value, source: "file" };
+  }
+  return out;
+}
+
+function which(bin) {
+  const r = spawnSync(process.platform === "win32" ? "where" : "which", [bin], { encoding: "utf8" });
+  if (r.status !== 0) return null;
+  return String(r.stdout).split(/\r?\n/)[0].trim() || null;
+}
+
+/** What barnowl would use with no configuration (for `config init` / `config`). */
+function detectPaths({ home = os.homedir(), platform = process.platform } = {}) {
+  let username = null;
+  try {
+    username = os.userInfo().username;
+  } catch (_) { /* no passwd entry */ }
+  const codex = require("./codex-engine.cjs").CODEX_BIN;
+  return {
+    claudeBin: which("claude"),
+    codexBin: path.isAbsolute(codex) ? codex : which(codex),
+    python: which("python3"),
+    codexHome: path.join(home, ".codex"),
+    claudeKeychainAccount: platform === "darwin" ? username : null,
+    claudeCredentialsFile: platform === "darwin" ? null : path.join(home, ".claude", ".credentials.json"),
+    stateDir: path.join(home, ".barnowl"),
+  };
+}
+
+module.exports = { PATH_KEYS, expandHome, applyPaths, detectPaths };
+```
+
+- [ ] **Step 4: Run test to verify it passes**
+
+Run: `node --test test/paths.test.js`
+Expected: PASS (4 tests)
+
+- [ ] **Step 5: Wire it into `bin/barnowl.js`**
+
+5a. Below `const { checkForUpdate } = require("../lib/self-update.js");` add:
+
+```js
+const { stateDir } = require("../lib/model-catalog.cjs");
+const { PATH_KEYS, applyPaths, detectPaths } = require("../lib/paths.cjs");
+```
+
+5b. Replace the four constants
+
+```js
+const STATE_DIR = path.join(os.homedir(), ".barnowl");
+const PID_FILE = path.join(STATE_DIR, "barnowl.pid");
+const LOG_FILE = path.join(STATE_DIR, "barnowl.log");
+const GLOBAL_CONFIG = path.join(STATE_DIR, "config.json");
+```
+
+with:
+
+```js
+// The config file is always looked up in ~/.barnowl; paths.stateDir only moves
+// barnowl's runtime files (pid, log, catalog, images).
+const CONFIG_HOME = path.join(os.homedir(), ".barnowl");
+const GLOBAL_CONFIG = path.join(CONFIG_HOME, "config.json");
+// Set by initPaths() once the config file's `paths` are applied.
+let STATE_DIR;
+let PID_FILE;
+let LOG_FILE;
+let PATHS;
+```
+
+5c. Memoize `loadConfigFile`, because `initPaths` and `parseFlags` both call it and an invalid file would otherwise warn twice. Add above the function:
+
+```js
+const configCache = new Map();
+```
+
+and wrap its body so it starts with:
+
+```js
+function loadConfigFile(explicitPath) {
+  const cacheKey = explicitPath || "";
+  if (configCache.has(cacheKey)) return configCache.get(cacheKey);
+  const found = findConfigFile(explicitPath);
+  configCache.set(cacheKey, found);
+  return found;
+}
+```
+
+Rename the existing function to `findConfigFile(explicitPath)`, with its body unchanged.
+
+5d. Add after `parseFlags`:
+
+```js
+/** Apply the config file's `paths` (env wins) and derive the runtime file locations. */
+function initPaths(argv) {
+  const i = argv.indexOf("--config");
+  const file = loadConfigFile(i >= 0 ? argv[i + 1] : undefined);
+  PATHS = applyPaths(file && file.data ? file.data.paths : null);
+  STATE_DIR = stateDir();
+  PID_FILE = path.join(STATE_DIR, "barnowl.pid");
+  LOG_FILE = path.join(STATE_DIR, "barnowl.log");
+}
+```
+
+5e. In `main()`, first line after `const [cmd, ...rest] = process.argv.slice(2);`:
+
+```js
+  initPaths(rest);
+```
+
+5f. In `config init`, change `fs.mkdirSync(STATE_DIR, { recursive: true });` to `fs.mkdirSync(CONFIG_HOME, { recursive: true });`. Add `paths` to `starter`, with detected values and nulls dropped:
+
+```js
+          paths: Object.fromEntries(Object.entries(detectPaths()).filter(([, v]) => v)),
+```
+
+After the line that prints `created: <target>`, add:
+
+```js
+        console.log("paths were pre-filled by auto-detection — check them (README: Setup with an AI agent)");
+```
+
+5g. In `config` (show), add `paths` to the printed object, after `configFile: cfg.configFile,`:
+
+```js
+          paths: (() => {
+            const detected = detectPaths();
+            return Object.fromEntries(PATH_KEYS.map(({ key }) => {
+              const r = PATHS[key];
+              const value = r.source === "auto" ? detected[key] : r.value;
+              return [key, `${value ?? "(none)"}  [${r.source}]`];
+            }));
+          })(),
+```
+
+5h. In `cmdHelp()`, after the `Config file (…)` paragraph add:
+
+```
+  Per-user paths (config "paths" block; env vars win; see README "Setup with an AI agent"):
+    claudeBin, codexBin, python, codexHome, claudeKeychainAccount, claudeCredentialsFile, stateDir
+```
+
+- [ ] **Step 6: Verify**
+
+Run:
+```bash
+S=$(mktemp -d); CFG=$S/cfg.json
+printf '{"paths":{"stateDir":"%s/state","python":"/usr/bin/python3"}}\n' "$S" > "$CFG"
+node bin/barnowl.js config --config "$CFG"
+BARNOWL_PYTHON=/env/python node bin/barnowl.js config --config "$CFG" | grep python
+node bin/barnowl.js config init "$S/new.json" && node -e 'console.log(Object.keys(require(process.argv[1]).paths))' "$S/new.json"
+npm test
+```
+Expected:
+- the first `config` prints `stateDir` as `<S>/state  [file]` and `python` as `/usr/bin/python3  [file]`; the rest are `[auto]` with detected values
+- the second prints `/env/python  [env]`
+- `config init` creates the file, and its `paths` keys include `claudeBin`, `codexHome`, `stateDir`
+- tests PASS
+
+- [ ] **Step 7: Commit**
+
+```bash
+git add lib/paths.cjs test/paths.test.js bin/barnowl.js
+git commit -m "Per-user paths in the config file (claude/codex/python bins, codex home, keychain account, state dir)
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>"
+```
+
+---
+
+### Task 8: CLI — refresh on start, `login`, `status`, `models`, help (`bin/barnowl.js`)
 
 **Files:**
 - Modify: `bin/barnowl.js`
 
 **Interfaces:**
-- Consumes: `stateDir`, `refreshCatalog`, `readCatalog`, `summarize`, `PROVIDERS`, `HIDDEN`, `claudeBin`, `codexBin` (Tasks 2–3). `NAMES` (Task 1).
-- Produces: `barnowl login [claude|codex]`. Start output lines `  Models   : …` / `  Auth     : …`. An auth block in `status`. A live `models` listing. The state dir honours `BARNOWL_STATE_DIR`.
+- Consumes: `refreshCatalog`, `readCatalog`, `summarize`, `PROVIDERS`, `HIDDEN`, `claudeBin`, `codexBin` (Tasks 2–3). `NAMES` (Task 1). `STATE_DIR` / `PID_FILE` / `LOG_FILE` set by `initPaths()` (Task 7).
+- Produces: `barnowl login [claude|codex]`. Start output lines `  Models   : …` / `  Auth     : …`. An auth block in `status`. A live `models` listing.
 
-- [ ] **Step 1: Imports and state dir**
+- [ ] **Step 1: Imports**
 
-Below `const { checkForUpdate } = require("../lib/self-update.js");` add:
+Replace `const { stateDir } = require("../lib/model-catalog.cjs");` (added in Task 7) with:
 
 ```js
 const {
   PROVIDERS, HIDDEN, stateDir, refreshCatalog, readCatalog, summarize, claudeBin, codexBin,
 } = require("../lib/model-catalog.cjs");
 const { NAMES } = require("../lib/auth-errors.cjs");
-```
-
-Replace `const STATE_DIR = path.join(os.homedir(), ".barnowl");` with:
-
-```js
-const STATE_DIR = stateDir(); // $BARNOWL_STATE_DIR or ~/.barnowl
 ```
 
 - [ ] **Step 2: Summary helpers** — add after `httpJson()`:
@@ -2020,7 +2366,7 @@ Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>"
 
 ---
 
-### Task 8: Docs (`README.md`, `README.ja.md`, spec)
+### Task 9: Docs (`README.md`, `README.ja.md`)
 
 **Files:**
 - Modify: `README.md` (usage block, paragraph at the "`barnowl models` lists every id…" line)
@@ -2086,18 +2432,118 @@ and change the models comment to `# ログインごとの実モデル一覧`.
 成功したリクエストで自動的に元に戻ります。
 ```
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 5: "Setup with an AI agent" section (README.md)** — insert as a new `##` section immediately before `## Usage`:
+
+```markdown
+## Setup with an AI agent
+
+Install paths differ per machine (where `claude` / `codex` / `python3` live,
+which keychain item holds the Claude login, …). They go in the `paths` block
+of `~/.barnowl/config.json`. The steps below are written for an AI coding
+agent (Claude Code, Codex, …): point it at this section and let it configure
+the machine.
+
+> **Agent instructions — configure barnowl's per-user paths**
+>
+> 1. Run `barnowl config init`. It creates `~/.barnowl/config.json` with
+>    `paths` pre-filled by auto-detection. If the file already exists, keep
+>    it and add or merge a `paths` object instead.
+> 2. Check every key in the table below with its command and correct the
+>    value in `paths`. Use absolute paths (`~` is allowed). Remove keys whose
+>    default is right.
+> 3. macOS only: the keychain can hold several `Claude Code-credentials`
+>    items. List them with
+>    `security dump-keychain | grep -B12 '"svce"<blob>="Claude Code-credentials"' | grep -E '"acct"|"mdat"'`
+>    and set `claudeKeychainAccount` to the account whose item was modified
+>    most recently. That is normally the OS username — never `unknown`.
+> 4. Verify:
+>    - `barnowl config` shows each path with `[file]` or `[auto]` and a real value
+>    - `barnowl start` prints `Auth     : claude ok · codex ok`
+>    - `barnowl verify` ends in `OK`
+>
+>    If a login shows `revoked` or `logged_out`, ask the user to run
+>    `barnowl login <provider>` (it opens a browser). Do not log in on their
+>    behalf.
+> 5. Never set `CLAUDE_CONFIG_DIR` for barnowl: Claude Code derives its
+>    keychain item from it, and the CLI would look logged out.
+
+| key | what | find it with | default |
+| --- | --- | --- | --- |
+| `claudeBin` | Claude Code CLI | `which claude` | `claude` on PATH |
+| `codexBin` | Codex CLI | `which codex` | common install dirs, then PATH |
+| `python` | Python 3 for image generation | `which python3` | `python3` |
+| `codexHome` | Codex data dir (login, model cache) | `echo ${CODEX_HOME:-$HOME/.codex}` | `~/.codex` |
+| `claudeKeychainAccount` | keychain account of the Claude login (macOS) | step 3 | OS username |
+| `claudeCredentialsFile` | Claude credentials file (Linux / Windows) | `ls ~/.claude/.credentials.json` | `~/.claude/.credentials.json` |
+| `stateDir` | barnowl's catalog, pid, log, images | — | `~/.barnowl` |
+
+Each key can also be set by an env var, which wins over the file:
+`BARNOWL_CLAUDE_BIN`, `BARNOWL_CODEX_BIN`, `BARNOWL_PYTHON`, `CODEX_HOME`,
+`BARNOWL_CLAUDE_KEYCHAIN_ACCOUNT`, `BARNOWL_CLAUDE_CREDENTIALS_FILE`,
+`BARNOWL_STATE_DIR`.
+```
+
+- [ ] **Step 6: Same section in README.ja.md** — find the usage heading with `grep -n '^## ' README.ja.md` and insert immediately before it:
+
+```markdown
+## AI エージェントでのセットアップ
+
+`claude` / `codex` / `python3` の場所や、Claude のログインが入っている
+キーチェーン項目は環境ごとに違います。これらは `~/.barnowl/config.json` の
+`paths` に書きます。以下は AI コーディングエージェント（Claude Code、Codex
+など）向けの手順です。エージェントにこの節を読ませて設定させてください。
+
+> **エージェントへの指示 — barnowl のパス設定**
+>
+> 1. `barnowl config init` を実行する。自動検出で `paths` を埋めた
+>    `~/.barnowl/config.json` ができる。既にファイルがある場合はそれを残し、
+>    `paths` オブジェクトを追加・マージする。
+> 2. 下の表の各キーを確認コマンドで調べ、`paths` の値を直す。絶対パスで書く
+>    （`~` は可）。既定値で正しいキーは消してよい。
+> 3. macOS のみ: キーチェーンに `Claude Code-credentials` が複数あることがある。
+>    `security dump-keychain | grep -B12 '"svce"<blob>="Claude Code-credentials"' | grep -E '"acct"|"mdat"'`
+>    で一覧し、更新日時（mdat）が最も新しい項目の acct を
+>    `claudeKeychainAccount` に設定する。通常は OS のユーザー名で、`unknown`
+>    は選ばない。
+> 4. 確認:
+>    - `barnowl config` で各パスが `[file]` か `[auto]` で実在の値になっている
+>    - `barnowl start` が `Auth     : claude ok · codex ok` を表示する
+>    - `barnowl verify` が `OK` で終わる
+>
+>    ログインが `revoked` / `logged_out` なら、ユーザーに
+>    `barnowl login <provider>` の実行を頼む（ブラウザが開く）。代わりに
+>    ログインはしない。
+> 5. barnowl のために `CLAUDE_CONFIG_DIR` を設定しない。Claude Code は
+>    これからキーチェーン項目名を決めるので、CLI が未ログイン扱いになる。
+
+| キー | 内容 | 調べ方 | 既定値 |
+| --- | --- | --- | --- |
+| `claudeBin` | Claude Code CLI | `which claude` | PATH 上の `claude` |
+| `codexBin` | Codex CLI | `which codex` | よくあるインストール先 → PATH |
+| `python` | 画像生成用 Python 3 | `which python3` | `python3` |
+| `codexHome` | Codex のデータ（ログイン・モデルキャッシュ） | `echo ${CODEX_HOME:-$HOME/.codex}` | `~/.codex` |
+| `claudeKeychainAccount` | Claude ログインのキーチェーン acct（macOS） | 手順 3 | OS ユーザー名 |
+| `claudeCredentialsFile` | Claude 認証ファイル（Linux / Windows） | `ls ~/.claude/.credentials.json` | `~/.claude/.credentials.json` |
+| `stateDir` | barnowl のカタログ・pid・ログ・画像 | — | `~/.barnowl` |
+
+各キーは環境変数でも指定できます（ファイルより優先）:
+`BARNOWL_CLAUDE_BIN`、`BARNOWL_CODEX_BIN`、`BARNOWL_PYTHON`、`CODEX_HOME`、
+`BARNOWL_CLAUDE_KEYCHAIN_ACCOUNT`、`BARNOWL_CLAUDE_CREDENTIALS_FILE`、
+`BARNOWL_STATE_DIR`。
+```
+
+- [ ] **Step 7: Commit**
 
 ```bash
 git add README.md README.ja.md
-git commit -m "Docs: live model list and revoked-login recovery
+git commit -m "Docs: live model list, revoked-login recovery, AI-agent path setup
 
 Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>"
 ```
 
 ---
 
-### Task 9: End-to-end verification + fresh install
+### Task 10: End-to-end verification + fresh install
 
 No new code. Every command runs from the repo root. Spare ports and isolated state dirs keep the user's running server (port 11435, `~/.barnowl`) untouched until Step 6. Report each expected/actual pair. If any step fails, stop and report instead of patching around it.
 
@@ -2168,6 +2614,18 @@ for m in 'claude-opus-5[1m]' gpt-5.6-terra; do curl -s -o /dev/null -w "$m %{htt
 BARNOWL_STATE_DIR=$S5 node bin/barnowl.js stop -p 11496
 ```
 Expected: both `200`.
+
+- [ ] **Step 5b: Per-user paths through a config file on :11495**
+
+```bash
+S6=$(mktemp -d); CFG=$S6/cfg.json
+printf '{"paths":{"stateDir":"%s/state","claudeBin":"%s","codexBin":"%s"}}\n' "$S6" "$(which claude)" "$(which codex)" > "$CFG"
+node bin/barnowl.js start -p 11495 --no-update --config "$CFG"
+ls "$S6/state"
+curl -s -o /dev/null -w 'sonnet %{http_code}\n' localhost:11495/v1/chat/completions -H 'Content-Type: application/json' -d '{"model":"sonnet","messages":[{"role":"user","content":"Reply with exactly: ok"}]}'
+node bin/barnowl.js stop -p 11495 --config "$CFG"
+```
+Expected: `ls` shows `barnowl.log`, `barnowl.pid` and `catalog.json` inside `$S6/state` (not `~/.barnowl`), and the request gives `sonnet 200`.
 
 - [ ] **Step 6: Fresh otterly + the real server** (restarts the user's local server on :11435 — a few seconds of downtime. `rm -rf node_modules` discards the hand-edited `models.js`, which these patches supersede.)
 
