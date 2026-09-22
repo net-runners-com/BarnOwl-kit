@@ -134,11 +134,21 @@ function parseFlags(argv) {
   // everything leaving the machine. env > file; enabled accepts true/"1"/"on".
   const g = f.guard && typeof f.guard === "object" ? f.guard : {};
   const truthy = (v) => ["1", "true", "yes", "on"].includes(String(v).toLowerCase());
+  const gl = g.llm && typeof g.llm === "object" ? g.llm : {};
   out.guard = {
     enabled: process.env.BARNOWL_GUARD !== undefined ? truthy(process.env.BARNOWL_GUARD) : truthy(g.enabled),
     policy: process.env.BARNOWL_GUARD_POLICY || g.policy || null,
     maskCmd: process.env.BARNOWL_GUARD_MASK_CMD || g.maskCmd || null,
     upstream: process.env.BARNOWL_GUARD_UPSTREAM || g.upstream || null,
+    // optional second stage: any OpenAI-compatible LLM judges the masked text
+    llm: {
+      url: process.env.BARNOWL_GUARD_LLM_URL || gl.url || null,
+      model: process.env.BARNOWL_GUARD_LLM_MODEL || gl.model || null,
+      apiKey: process.env.BARNOWL_GUARD_LLM_KEY || gl.apiKey || null,
+      timeoutMs: process.env.BARNOWL_GUARD_LLM_TIMEOUT_MS || gl.timeoutMs || null,
+      maxChars: process.env.BARNOWL_GUARD_LLM_MAXCHARS || gl.maxChars || null,
+      prompt: process.env.BARNOWL_GUARD_LLM_PROMPT || gl.prompt || null,
+    },
   };
   return out;
 }
@@ -268,7 +278,17 @@ async function cmdStart(argv) {
     if (cfg.guard.policy) process.env.BARNOWL_GUARD_POLICY = expandHome(cfg.guard.policy, os.homedir());
     if (cfg.guard.maskCmd) process.env.BARNOWL_GUARD_MASK_CMD = cfg.guard.maskCmd;
     if (cfg.guard.upstream) process.env.BARNOWL_GUARD_UPSTREAM = cfg.guard.upstream;
+    const llm = cfg.guard.llm;
+    if (llm.url) {
+      process.env.BARNOWL_GUARD_LLM_URL = llm.url;
+      if (llm.model) process.env.BARNOWL_GUARD_LLM_MODEL = String(llm.model);
+      if (llm.apiKey) process.env.BARNOWL_GUARD_LLM_KEY = String(llm.apiKey);
+      if (llm.timeoutMs) process.env.BARNOWL_GUARD_LLM_TIMEOUT_MS = String(llm.timeoutMs);
+      if (llm.maxChars) process.env.BARNOWL_GUARD_LLM_MAXCHARS = String(llm.maxChars);
+      if (llm.prompt) process.env.BARNOWL_GUARD_LLM_PROMPT = String(llm.prompt);
+    }
     console.log(`  Guard    : ON — text masked, images rejected, fail-closed (policy: ${cfg.guard.policy || "secret-guard defaults"})`);
+    if (llm.url) console.log(`  Guard LLM: ${llm.model || "qwen2.5:3b"} @ ${llm.url} (verdict on masked text)`);
     console.log(`  Anthropic: ${baseUrl(cfg.port)} (point ANTHROPIC_BASE_URL here for a guarded passthrough)`);
   }
 
@@ -580,15 +600,19 @@ function cmdHelp() {
     Models   : sonnet | opus | haiku | fable
 
   Outbound PII guard (config "guard" block):
-    { "guard": { "enabled": true, "policy": "~/path/to/policy-dir" } }
+    { "guard": { "enabled": true, "policy": "~/path/to/policy-dir",
+                 "llm": { "url": "http://127.0.0.1:11434/v1/chat/completions", "model": "qwen2.5:3b" } } }
     Masks every outbound text via secret-guard, rejects images, fails closed.
     Also adds POST /v1/messages — a guarded anthropic passthrough for Claude
     Code (ANTHROPIC_BASE_URL=http://localhost:11435). The policy dir's
-    secret-guard.json is used when present.
+    secret-guard.json is used when present. "llm" adds a second stage: any
+    OpenAI-compatible LLM judges the masked text; leak verdict → 403.
 
   Env: BARNOWL_PORT, BARNOWL_WORK_DIR, BARNOWL_API_KEY, BARNOWL_AUTO_UPDATE, BARNOWL_STATE_DIR,
        BARNOWL_QUEUE_TIMEOUT, BARNOWL_MAX_CONCURRENT, BARNOWL_MAX_QUEUE, BARNOWL_RATE_LIMIT,
-       BARNOWL_GUARD, BARNOWL_GUARD_POLICY, BARNOWL_GUARD_MASK_CMD, BARNOWL_GUARD_UPSTREAM
+       BARNOWL_GUARD, BARNOWL_GUARD_POLICY, BARNOWL_GUARD_MASK_CMD, BARNOWL_GUARD_UPSTREAM,
+       BARNOWL_GUARD_LLM_URL, BARNOWL_GUARD_LLM_MODEL, BARNOWL_GUARD_LLM_KEY,
+       BARNOWL_GUARD_LLM_TIMEOUT_MS, BARNOWL_GUARD_LLM_MAXCHARS, BARNOWL_GUARD_LLM_PROMPT
 `);
   return 0;
 }
@@ -640,7 +664,12 @@ async function main() {
           apiKey: cfg.apiKey ? "(set)" : null,
           autoUpdate: cfg.autoUpdate,
           guard: cfg.guard.enabled
-            ? { enabled: true, policy: cfg.guard.policy, maskCmd: cfg.guard.maskCmd || "(secret-guard default)", upstream: cfg.guard.upstream || "https://api.anthropic.com" }
+            ? {
+                enabled: true, policy: cfg.guard.policy,
+                maskCmd: cfg.guard.maskCmd || "(secret-guard default)",
+                upstream: cfg.guard.upstream || "https://api.anthropic.com",
+                llm: cfg.guard.llm.url ? { url: cfg.guard.llm.url, model: cfg.guard.llm.model || "qwen2.5:3b" } : null,
+              }
             : { enabled: false },
           configFile: cfg.configFile,
           paths: (() => {

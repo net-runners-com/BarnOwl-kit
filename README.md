@@ -495,7 +495,11 @@ Claude Code ── ANTHROPIC_BASE_URL=http://localhost:11435 ──► barnowl
     "enabled": true,
     "policy": "~/path/to/policy-dir",
     "maskCmd": null,
-    "upstream": null
+    "upstream": null,
+    "llm": {
+      "url": "http://127.0.0.1:11434/v1/chat/completions",
+      "model": "qwen2.5:3b"
+    }
   }
 }
 ```
@@ -520,6 +524,16 @@ Details:
 - `maskCmd` — any stdin → stdout filter; replaces the secret-guard default.
 - `upstream` — the Anthropic base URL for `/v1/messages`
   (default `https://api.anthropic.com`; tests point it at a mock).
+- `llm` — optional second stage: after masking, any OpenAI-compatible LLM
+  (Ollama, LM Studio, vLLM, LiteLLM, …) judges whether unmasked PII remains;
+  a leak verdict → `403 guard_blocked`. Verdict only — the LLM never rewrites
+  text, and mask tokens are stripped before it looks (small models misread
+  them as PII; with stripping, `qwen2.5:3b` scored 6/6 on our verdict cases).
+  Per-chunk verdicts are cached by hash, so re-sent conversation history is
+  not re-checked. Keys: `url`, `model`, `apiKey`, `timeoutMs` (20s),
+  `maxChars` (4000 per chunk), `prompt` (system-prompt override).
+  A **remote** checker sees your masked text — keep it local for privacy.
+  Checker failure blocks the request (fail-closed), like everything else.
 - `/v1/messages` forwards the **client's own** auth headers
   (`Authorization` / `x-api-key` / `anthropic-*`); barnowl holds no key and
   does not apply its own Bearer auth to that route. Verified with API-key

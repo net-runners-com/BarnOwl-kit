@@ -197,6 +197,74 @@ test("handleMessages: image block → 403, upstream never called", async () => {
   front.close();
 });
 
+// ── LLM checker ─────────────────────────────────────────────────────────────
+
+function llmServer(reply) {
+  const state = { hits: 0 };
+  state.server = http.createServer((req, res) => {
+    state.hits++;
+    let d = "";
+    req.on("data", (c) => (d += c));
+    req.on("end", () => {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ choices: [{ message: { content: reply(JSON.parse(d)) } }] }));
+    });
+  });
+  return state;
+}
+
+test("llmCheckTexts: clean verdict passes; cache skips repeat chunks", async () => {
+  const s = llmServer(() => '{"leak": false}');
+  const port = await listen(s.server);
+  await withEnv({ BARNOWL_GUARD_LLM_URL: `http://127.0.0.1:${port}`, BARNOWL_GUARD_LLM_MODEL: "test-cache-clean" }, async () => {
+    await guard.llmCheckTexts(["clean text one", "clean text two"]);
+    assert.equal(s.hits, 2);
+    await guard.llmCheckTexts(["clean text one", "clean text two"]);
+    assert.equal(s.hits, 2); // cached, no new calls
+  })();
+  s.server.close();
+});
+
+test("llmCheckTexts: leak verdict → GuardBlocked", async () => {
+  const s = llmServer(() => '{"leak": true}');
+  const port = await listen(s.server);
+  await withEnv({ BARNOWL_GUARD_LLM_URL: `http://127.0.0.1:${port}`, BARNOWL_GUARD_LLM_MODEL: "test-leak" }, async () => {
+    await assert.rejects(guard.llmCheckTexts(["still has 090-9999-8888"]), guard.GuardBlocked);
+  })();
+  s.server.close();
+});
+
+test("llmCheckTexts: unreachable checker → fail closed", withEnv(
+  { BARNOWL_GUARD_LLM_URL: "http://127.0.0.1:1", BARNOWL_GUARD_LLM_MODEL: "test-down" },
+  async () => {
+    await assert.rejects(guard.llmCheckTexts(["x"]), /llm checker failed/);
+  },
+));
+
+test("llmCheckTexts: unparseable verdict → fail closed", async () => {
+  const s = llmServer(() => "well, maybe?");
+  const port = await listen(s.server);
+  await withEnv({ BARNOWL_GUARD_LLM_URL: `http://127.0.0.1:${port}`, BARNOWL_GUARD_LLM_MODEL: "test-vague" }, async () => {
+    await assert.rejects(guard.llmCheckTexts(["y"]), /unparseable/);
+  })();
+  s.server.close();
+});
+
+test("llmCheckTexts: no LLM configured → no-op", withEnv({ BARNOWL_GUARD_LLM_URL: undefined }, async () => {
+  await guard.llmCheckTexts(["anything"]);
+}));
+
+test("guardEngineBody: mask + LLM leak verdict → 403", async () => {
+  const s = llmServer(() => '{"leak": true}');
+  const port = await listen(s.server);
+  await withEnv({ ...ON, BARNOWL_GUARD_LLM_URL: `http://127.0.0.1:${port}`, BARNOWL_GUARD_LLM_MODEL: "test-e2e-leak" }, async () => {
+    const r = await guard.guardEngineBody("/v1/chat/completions", { messages: [{ role: "user", content: "leaky" }] });
+    assert.equal(r.ok, false);
+    assert.equal(r.status, 403);
+  })();
+  s.server.close();
+});
+
 test("handleMessages: guard disabled → verbatim passthrough", async () => {
   let seen = null;
   const upstream = http.createServer((req, res) => {

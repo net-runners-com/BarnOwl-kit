@@ -478,7 +478,8 @@ Claude Code ── ANTHROPIC_BASE_URL=http://localhost:11435 ──► barnowl
 ```
 
 ```json
-{ "guard": { "enabled": true, "policy": "~/path/to/policy-dir" } }
+{ "guard": { "enabled": true, "policy": "~/path/to/policy-dir",
+  "llm": { "url": "http://127.0.0.1:11434/v1/chat/completions", "model": "qwen2.5:3b" } } }
 ```
 
 - **テキスト**はマスクコマンド（既定 `node ~/.claude/hooks/secret-guard.mjs mask`）で
@@ -490,6 +491,12 @@ Claude Code ── ANTHROPIC_BASE_URL=http://localhost:11435 ──► barnowl
   マスクコマンドに渡る
 - `/v1/messages` はクライアント自身の認証ヘッダをそのまま上流へ転送
   （API キーで動作確認済み。サブスク OAuth は未検証）
+- `llm` — 任意の OpenAI 互換 LLM（Ollama / LM Studio / vLLM / LiteLLM など）に
+  マスク後の残留 PII を判定させる二次チェック。leak 判定 → `403`。判定のみで
+  書き換えはしない。マスクトークンは除去してから渡す（小型モデルの誤検出対策。
+  `qwen2.5:3b` で 6/6 正解を実測）。チャンク単位の判定はハッシュでキャッシュされ、
+  再送された会話履歴は再チェックしない。リモート LLM を指すとそれ自体が送信に
+  なるのでローカル推奨。チェッカー障害も fail-closed
 
 環境変数: `BARNOWL_GUARD` `BARNOWL_GUARD_POLICY` `BARNOWL_GUARD_MASK_CMD`
 `BARNOWL_GUARD_UPSTREAM`
