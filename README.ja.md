@@ -466,6 +466,34 @@ claude.ai セッションの OAuth に紐づいており、サーバーが spawn
   URL/ヘッダーに書きます。プロファイルは gitignore されるのでシークレットは
   ローカルに留まります。
 
+## 送信 PII ガード
+
+外に出るリクエストを全経路で検査するオプション機能。`POST /v1/messages`
+（Anthropic パススルー）も追加され、Claude Code のトラフィックも検査できる:
+
+```
+Claude Code ── ANTHROPIC_BASE_URL=http://localhost:11435 ──► barnowl
+  ├ /v1/messages (新設)          ガード → api.anthropic.com へそのまま転送
+  └ /v1/chat/completions など既存 ガード → 従来どおりローカルエンジンへ
+```
+
+```json
+{ "guard": { "enabled": true, "policy": "~/path/to/policy-dir" } }
+```
+
+- **テキスト**はマスクコマンド（既定 `node ~/.claude/hooks/secret-guard.mjs mask`）で
+  `<名前>` `<電話番号>` 等の決定的トークンに置換して転送（プロンプトキャッシュ維持）
+- **画像・文書・音声**はマスク不能なので `403 guard_blocked` で拒否
+- **fail-closed**: マスクコマンドの不在・異常終了・タイムアウト（30s）は全て拒否。
+  マスクなしで転送されることはない
+- `policy` ディレクトリの `secret-guard.json` が `SECRET_GUARD_CONFIG` として
+  マスクコマンドに渡る
+- `/v1/messages` はクライアント自身の認証ヘッダをそのまま上流へ転送
+  （API キーで動作確認済み。サブスク OAuth は未検証）
+
+環境変数: `BARNOWL_GUARD` `BARNOWL_GUARD_POLICY` `BARNOWL_GUARD_MASK_CMD`
+`BARNOWL_GUARD_UPSTREAM`
+
 ## 設定（設定ファイル）
 
 一度書いておけばフラグなしで起動できます。優先順位:

@@ -477,6 +477,63 @@ Startup cost is paid per spawned process, so:
   (stdio) or the URL/headers (HTTP). Profiles are gitignored, so secrets stay
   local.
 
+## Outbound PII guard
+
+An optional guard inspects **everything that would leave the machine** — and
+adds `POST /v1/messages`, a guarded Anthropic passthrough, so Claude Code's
+own traffic can be inspected too:
+
+```
+Claude Code ── ANTHROPIC_BASE_URL=http://localhost:11435 ──► barnowl
+  ├ /v1/messages (new)        guard → forwarded verbatim to api.anthropic.com
+  └ /v1/chat/completions etc. guard → the usual local claude / codex engines
+```
+
+```json
+{
+  "guard": {
+    "enabled": true,
+    "policy": "~/path/to/policy-dir",
+    "maskCmd": null,
+    "upstream": null
+  }
+}
+```
+
+What it does per request:
+
+- **Text** (system prompts, messages, tool results) is piped through the mask
+  command — by default `node ~/.claude/hooks/secret-guard.mjs mask`, a
+  stdin → stdout filter that replaces PII with stable tokens (`<名前>`,
+  `<電話番号>`, …). Tokens are deterministic, so Anthropic prompt caching
+  keeps working.
+- **Images / documents / audio** cannot be masked and are rejected with
+  `403 guard_blocked`.
+- **Fail-closed**: if the mask command is missing, exits nonzero, or times
+  out (30s), the request is blocked — never forwarded unmasked.
+
+Details:
+
+- `policy` — a directory whose `secret-guard.json` is passed to the mask
+  command as `SECRET_GUARD_CONFIG`. Point it at a policy like
+  `claudehac/policies/secure` to keep one source of truth.
+- `maskCmd` — any stdin → stdout filter; replaces the secret-guard default.
+- `upstream` — the Anthropic base URL for `/v1/messages`
+  (default `https://api.anthropic.com`; tests point it at a mock).
+- `/v1/messages` forwards the **client's own** auth headers
+  (`Authorization` / `x-api-key` / `anthropic-*`); barnowl holds no key and
+  does not apply its own Bearer auth to that route. Verified with API-key
+  auth; subscription (OAuth) clients are untested.
+- With the guard disabled, `/v1/messages` still exists but forwards
+  unmasked, and the engine routes behave exactly as before.
+
+Claude Code client setup:
+
+```bash
+export ANTHROPIC_BASE_URL=http://localhost:11435
+claude
+```
+
 ## Configuration (config file)
 
 Declare everything once and start with no flags. Resolution:
@@ -528,6 +585,10 @@ barnowl config         # show the effective config + which file was used
 | `BARNOWL_CODEX_SANDBOX`   | `read-only` | codex sandbox mode for chat   |
 | `BARNOWL_CODEX_TIMEOUT_MS`| `300000`  | per-request kill for Codex chat |
 | `BARNOWL_IMAGE_TIMEOUT_MS`| `600000`  | per-image kill for image generation |
+| `BARNOWL_GUARD`           | (off)     | `1` enables the outbound PII guard  |
+| `BARNOWL_GUARD_POLICY`    | (unset)   | policy dir; its `secret-guard.json` feeds the mask command |
+| `BARNOWL_GUARD_MASK_CMD`  | secret-guard | override mask command (stdin → stdout) |
+| `BARNOWL_GUARD_UPSTREAM`  | api.anthropic.com | Anthropic upstream for `/v1/messages` |
 
 State (PID + log) lives in `~/.barnowl/`.
 

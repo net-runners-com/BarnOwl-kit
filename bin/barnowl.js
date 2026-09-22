@@ -20,7 +20,7 @@ const {
   PROVIDERS, HIDDEN, stateDir, refreshCatalog, readCatalog, summarize, claudeBin, codexBin,
 } = require("../lib/model-catalog.cjs");
 const { NAMES } = require("../lib/auth-errors.cjs");
-const { PATH_KEYS, applyPaths, detectPaths } = require("../lib/paths.cjs");
+const { PATH_KEYS, applyPaths, detectPaths, expandHome } = require("../lib/paths.cjs");
 
 const PKG = require("../package.json");
 
@@ -130,6 +130,16 @@ function parseFlags(argv) {
   };
   // "mcp": false / "none" in the file explicitly disables MCP even if env sets it
   if (out.mcp === "false" || out.mcp === "none") out.mcp = undefined;
+  // "guard" block (nested object, not a flat key): outbound PII guard for
+  // everything leaving the machine. env > file; enabled accepts true/"1"/"on".
+  const g = f.guard && typeof f.guard === "object" ? f.guard : {};
+  const truthy = (v) => ["1", "true", "yes", "on"].includes(String(v).toLowerCase());
+  out.guard = {
+    enabled: process.env.BARNOWL_GUARD !== undefined ? truthy(process.env.BARNOWL_GUARD) : truthy(g.enabled),
+    policy: process.env.BARNOWL_GUARD_POLICY || g.policy || null,
+    maskCmd: process.env.BARNOWL_GUARD_MASK_CMD || g.maskCmd || null,
+    upstream: process.env.BARNOWL_GUARD_UPSTREAM || g.upstream || null,
+  };
   return out;
 }
 
@@ -249,6 +259,18 @@ async function cmdStart(argv) {
   if (cfg.configFile) console.log(`  Config   : ${cfg.configFile}`);
   // otterly reads OTTERLY_API_KEY for Bearer auth; forward barnowl's key to it.
   if (cfg.apiKey) process.env.OTTERLY_API_KEY = cfg.apiKey;
+
+  // Outbound PII guard → env for the server process (read by lib/guard.cjs
+  // inside the patched otterly). The /v1/messages passthrough route exists
+  // either way; masking / image rejection only happens when enabled.
+  if (cfg.guard.enabled) {
+    process.env.BARNOWL_GUARD = "1";
+    if (cfg.guard.policy) process.env.BARNOWL_GUARD_POLICY = expandHome(cfg.guard.policy, os.homedir());
+    if (cfg.guard.maskCmd) process.env.BARNOWL_GUARD_MASK_CMD = cfg.guard.maskCmd;
+    if (cfg.guard.upstream) process.env.BARNOWL_GUARD_UPSTREAM = cfg.guard.upstream;
+    console.log(`  Guard    : ON — text masked, images rejected, fail-closed (policy: ${cfg.guard.policy || "secret-guard defaults"})`);
+    console.log(`  Anthropic: ${baseUrl(cfg.port)} (point ANTHROPIC_BASE_URL here for a guarded passthrough)`);
+  }
 
   // Make sure the speed patch is applied to our otterly copy.
   try {
@@ -557,8 +579,16 @@ function cmdHelp() {
     API key  : any string (auth disabled unless BARNOWL_API_KEY is set)
     Models   : sonnet | opus | haiku | fable
 
+  Outbound PII guard (config "guard" block):
+    { "guard": { "enabled": true, "policy": "~/path/to/policy-dir" } }
+    Masks every outbound text via secret-guard, rejects images, fails closed.
+    Also adds POST /v1/messages — a guarded anthropic passthrough for Claude
+    Code (ANTHROPIC_BASE_URL=http://localhost:11435). The policy dir's
+    secret-guard.json is used when present.
+
   Env: BARNOWL_PORT, BARNOWL_WORK_DIR, BARNOWL_API_KEY, BARNOWL_AUTO_UPDATE, BARNOWL_STATE_DIR,
-       BARNOWL_QUEUE_TIMEOUT, BARNOWL_MAX_CONCURRENT, BARNOWL_MAX_QUEUE, BARNOWL_RATE_LIMIT
+       BARNOWL_QUEUE_TIMEOUT, BARNOWL_MAX_CONCURRENT, BARNOWL_MAX_QUEUE, BARNOWL_RATE_LIMIT,
+       BARNOWL_GUARD, BARNOWL_GUARD_POLICY, BARNOWL_GUARD_MASK_CMD, BARNOWL_GUARD_UPSTREAM
 `);
   return 0;
 }
@@ -609,6 +639,9 @@ async function main() {
           maxQueue: cfg.maxQueue, rateLimit: cfg.rateLimit,
           apiKey: cfg.apiKey ? "(set)" : null,
           autoUpdate: cfg.autoUpdate,
+          guard: cfg.guard.enabled
+            ? { enabled: true, policy: cfg.guard.policy, maskCmd: cfg.guard.maskCmd || "(secret-guard default)", upstream: cfg.guard.upstream || "https://api.anthropic.com" }
+            : { enabled: false },
           configFile: cfg.configFile,
           paths: (() => {
             const detected = detectPaths();
