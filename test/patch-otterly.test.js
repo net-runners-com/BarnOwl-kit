@@ -98,6 +98,37 @@ test("events: synthetic API-error assistant text is dropped, normal text kept", 
   }, createEventContext()), [{ type: "text", text: "hi" }]);
 });
 
+test("server/index.js: plugins hook sits before the guard on engine routes", () => {
+  const src = read("server/index.js");
+  const hook = src.indexOf("barnowl: plugins on engine routes");
+  const guardBlock = src.indexOf("barnowl: outbound PII guard on engine routes");
+  assert.ok(hook > 0, "plugins hook present");
+  assert.ok(hook < guardBlock, "plugins run before the guard so blocked requests are attributed");
+  assert.ok(src.includes("await __barnowlGuard.plugins.beginEngine(path, req.headers, parsed.body)"));
+  assert.ok(src.includes("__barnowlGuard.plugins.attach(res, __p.call);"));
+  assert.equal(src.split("barnowl: plugins on engine routes").length, 2, "applied exactly once");
+});
+
+test("server/metrics.js: record() reports to the plugin tap, totals unchanged", async () => {
+  assert.ok(read("server/metrics.js").includes("barnowl: plugins metrics tap"));
+  const { metrics } = await load("server/metrics.js");
+  const before = metrics.totalRequests;
+  const saved = globalThis.__barnowlOnMetrics;
+  const seen = [];
+  globalThis.__barnowlOnMetrics = (run) => seen.push(run);
+  try {
+    metrics.record({ ts: 1, endpoint: "chat", status: 200, durationMs: 5, inputTokens: 7, outputTokens: 9, toolCalls: 0 });
+  } finally {
+    globalThis.__barnowlOnMetrics = saved;
+  }
+  assert.equal(seen.length, 1);
+  assert.equal(seen[0].inputTokens, 7);
+  assert.equal(metrics.totalRequests, before + 1);
+  delete globalThis.__barnowlOnMetrics;
+  assert.doesNotThrow(() => metrics.record({ ts: 2, endpoint: "chat", status: 200, durationMs: 1 }), "no tap installed → no-op");
+  globalThis.__barnowlOnMetrics = saved;
+});
+
 // Last: importing models.js binds the process-wide auth-state to CATALOG.
 test("models.js serves the catalog in place", async () => {
   fs.writeFileSync(CATALOG, JSON.stringify({
