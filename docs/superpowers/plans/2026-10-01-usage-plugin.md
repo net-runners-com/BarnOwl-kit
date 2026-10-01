@@ -1041,7 +1041,7 @@ test("summarize groups by user then route and counts outcomes", () => {
   assert.equal(sato.cacheReadTokens, 8);
   assert.equal(sato.devices, 2);
   assert.equal(sato.sessions, 2);
-  // s1: 0-1 and 2-3 merged → 3 min. s2: 30-31 and 40-41 are 9 min apart → 1 + 1.
+  // s1: 0-1 and 2-3 merged (3 min) + 40-41 (1 min). s2: 30-31 (1 min).
   assert.equal(sato.activeMinutes, 5);
   const api = rows[2];
   assert.deepEqual([api.requests, api.sessions, api.devices, api.activeMinutes, api.cacheReadTokens], [1, 0, 0, 1, 0]);
