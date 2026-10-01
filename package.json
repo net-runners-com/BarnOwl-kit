@@ -19,6 +19,7 @@
   "files": [
     "bin",
     "lib",
+    "plugins",
     "config",
     "vendor",
     "README.md"

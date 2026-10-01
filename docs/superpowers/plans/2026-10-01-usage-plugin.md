@@ -1353,7 +1353,7 @@ test("metadata that is absent, not JSON, or the wrong shape is ignored", () => {
   const { dir } = fresh();
   const key = keys.add(dir, "sato");
   const none = { user: "sato", deviceId: null, accountUuid: null, sessionId: null };
-  for (const metadata of [undefined, {}, { user_id: "plain-string-id" }, { user_id: "[1,2]" }, { user_id: 42 }, { user_id: '{"device_id":7}' }]) {
+  for (const metadata of [null, {}, { user_id: "plain-string-id" }, { user_id: "[1,2]" }, { user_id: 42 }, { user_id: '{"device_id":7}' }]) {
     assert.deepEqual(usage.onRequest(nativeReq({ "x-barnowl-key": key }, metadata)).identity, none, JSON.stringify(metadata));
   }
 });
