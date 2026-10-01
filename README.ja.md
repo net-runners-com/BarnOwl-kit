@@ -466,6 +466,121 @@ claude.ai セッションの OAuth に紐づいており、サーバーが spawn
   URL/ヘッダーに書きます。プロファイルは gitignore されるのでシークレットは
   ローカルに留まります。
 
+## Claude Code のチャット画面からそのまま使う
+
+Claude Code の接続先を barnowl に向けるだけです。チャット画面・ツール・
+ログインは今までどおりです:
+
+```bash
+export ANTHROPIC_BASE_URL=http://localhost:11435
+claude
+```
+
+恒久的に設定するなら Claude Code の `settings.json` に:
+
+```json
+{ "env": { "ANTHROPIC_BASE_URL": "http://localhost:11435" } }
+```
+
+この経路では barnowl は自分で CLI を起動**しません**。Claude Code が送る通常の
+`POST /v1/messages` を、クライアント自身の認証情報ごと `api.anthropic.com` へ
+転送し、応答をそのまま返します。API キーは不要で、サブスクリプションの
+ログインで動きます（Claude Max で確認済み）。
+
+barnowl の入口は 2 つあり、別物です:
+
+| | `native` — `/v1/messages` | `api` — `/v1/chat/completions`、`/api/*` |
+| --- | --- | --- |
+| クライアント | Claude Code | Cursor・Aider・OpenAI / Ollama SDK |
+| barnowl の動き | リクエストを転送する | `claude -p` / `codex` を起動して答える |
+| 使われるログイン | 利用者本人 | barnowl を動かしているマシン |
+| ツール・フック・セッション | Claude Code のものがそのまま動く | なし（barnowl のエンジン） |
+
+利用者から見て変わる点はありません。[ガード](#送信-pii-ガード)を有効にした場合
+（テキストはマスク、画像は拒否。拒否は Claude Code 上で API エラーとして
+表示されます）と、[usage プラグイン](#プラグイン)を入れた場合（キーが必要）
+だけ挙動が変わります。
+
+## プラグイン
+
+後から足す拡張機能です。設定ファイルに書いたものだけが読み込まれます:
+
+```json
+{ "plugins": { "usage": {} } }
+```
+
+名前だけ書くと `plugins/` 同梱のプラグイン、パス（`"~/my/plugin.cjs"`）を
+書くと自作のものを読み込みます。`barnowl start` は `Plugins : usage` と
+表示し、設定したプラグインを読み込めない場合は起動しません。
+環境変数: `BARNOWL_PLUGINS`（このブロックの JSON）。
+
+### `usage` — 誰がどれだけ使ったか
+
+管理者が発行するキーで利用者を識別し、リクエストごとにメタデータを 1 行
+記録します。
+
+```bash
+barnowl usage key add sato        # キーは一度だけ表示される
+barnowl usage key list
+barnowl usage key revoke sato     # 即時反映、再起動不要
+```
+
+利用者側はキーを設定するだけです:
+
+```bash
+# Claude Code
+export ANTHROPIC_CUSTOM_HEADERS="X-Barnowl-Key: bo_…"
+# それ以外のクライアント: ヘッダー X-Barnowl-Key: bo_… を送る
+```
+
+有効なキーがないリクエストは `401` になります。両方の経路が対象なので、
+エンジン経路もキーなしでは使えなくなります。`"usage": { "requireKey": false }`
+にするとキーなしも通し、`unknown` として記録します。
+
+```bash
+barnowl usage                 # 直近 7 日、利用者・経路ごと
+barnowl usage --days 30
+barnowl usage --from 2026-10-01 --to 2026-10-31 --json
+```
+
+```
+user  route   reqs  blocked  rejected  errors   input  output  cache-w  cache-r  devices  sessions  active
+sato  api        3        0         0       0   1,204     310        0        0        0         0      2m
+sato  native    42        1         0       0  18,331   9,120   40,112  611,904        1         3  1h 12m
+```
+
+- **記録するもの**（`<state dir>/usage/YYYY-MM-DD.jsonl`、モード 0600）: 時刻、
+  経路（`native` / `api`）、利用者、モデル、ステータス、結果（`ok` /
+  ガードによる `blocked` / キー不正の `rejected` / `upstream_error`）、
+  所要時間、入力・出力・キャッシュのトークン数。`native` では Claude が
+  呼んだツール名と、Claude Code の `device_id`・`account_uuid`・`session_id`。
+- **記録しないもの**: プロンプト本文、応答本文、キー（保存するのは SHA-256
+  だけ）、クライアントの認証情報。
+- キーは転送前に取り除かれ、Anthropic には届きません。
+- `active` は、同じセッション内で 5 分以内に続いたリクエストをまとめた
+  利用時間です。
+- `api` では device / account / session、キャッシュのトークン数、ツール名は
+  取得できないため空になります。
+- `/ws` は対象外です。
+
+### プラグインを書く
+
+次のいずれかをエクスポートする CommonJS モジュールです:
+
+```js
+module.exports = {
+  name: "mine",
+  init(options, { stateDir, log }) {},
+  // { identity: {...}, stripHeaders: ["x-…"], reject: { status, type, message } } を返せる
+  onRequest({ route, path, headers, body }) {},
+  onComplete(record) {},          // 応答を返した後
+  cli(argv, { stateDir, out, err }) { return 0; },   // `barnowl mine ...`
+};
+```
+
+`onRequest` が例外を投げるとリクエストは拒否されます（`500`）。`onComplete`
+の例外はログに残して無視します。
+
 ## 送信 PII ガード
 
 外に出るリクエストを全経路で検査するオプション機能。`POST /v1/messages`

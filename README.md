@@ -477,6 +477,120 @@ Startup cost is paid per spawned process, so:
   (stdio) or the URL/headers (HTTP). Profiles are gitignored, so secrets stay
   local.
 
+## Use Claude Code's chat screen through barnowl
+
+Point Claude Code at barnowl and keep using it exactly as before — same chat
+screen, same tools, same login:
+
+```bash
+export ANTHROPIC_BASE_URL=http://localhost:11435
+claude
+```
+
+or permanently, in Claude Code's `settings.json`:
+
+```json
+{ "env": { "ANTHROPIC_BASE_URL": "http://localhost:11435" } }
+```
+
+On this path barnowl does **not** run a CLI of its own. Claude Code sends its
+normal `POST /v1/messages` request; barnowl forwards it, with the client's own
+credentials, to `api.anthropic.com` and streams the answer back. No API key is
+involved: a subscription login works (verified with Claude Max).
+
+barnowl has two ways in, and they are different things:
+
+| | `native` — `/v1/messages` | `api` — `/v1/chat/completions`, `/api/*` |
+| --- | --- | --- |
+| client | Claude Code | Cursor, Aider, any OpenAI / Ollama SDK |
+| what barnowl does | forwards the request | spawns `claude -p` / `codex` and answers |
+| whose login | the user's own | the login on the barnowl machine |
+| tools, hooks, sessions | Claude Code's, unchanged | none (barnowl's engine) |
+
+What changes for the user: nothing, unless you turn on the
+[guard](#outbound-pii-guard) (text is masked, images are refused — Claude Code
+shows the refusal as an API error) or the [usage plugin](#plugins) (a key is
+required).
+
+## Plugins
+
+Opt-in extensions, off unless the config file names them:
+
+```json
+{ "plugins": { "usage": {} } }
+```
+
+A bare name is a plugin bundled in `plugins/`; a path (`"~/my/plugin.cjs"`)
+loads your own. `barnowl start` prints `Plugins : usage` and refuses to start
+if a configured plugin cannot load. Env: `BARNOWL_PLUGINS` (the block as JSON).
+
+### `usage` — who used it, and how much
+
+Identifies each caller by a key you issue, and writes one line of metadata per
+request.
+
+```bash
+barnowl usage key add sato        # prints the key once
+barnowl usage key list
+barnowl usage key revoke sato     # takes effect immediately, no restart
+```
+
+Each user adds the key on their side:
+
+```bash
+# Claude Code
+export ANTHROPIC_CUSTOM_HEADERS="X-Barnowl-Key: bo_…"
+# any other client: send the header  X-Barnowl-Key: bo_…
+```
+
+A request without a valid key gets `401`. This covers both routes, so the key
+also locks the engine routes. `"usage": { "requireKey": false }` lets keyless
+requests through, recorded as `unknown`.
+
+```bash
+barnowl usage                 # last 7 days, per user and route
+barnowl usage --days 30
+barnowl usage --from 2026-10-01 --to 2026-10-31 --json
+```
+
+```
+user  route   reqs  blocked  rejected  errors   input  output  cache-w  cache-r  devices  sessions  active
+sato  api        3        0         0       0   1,204     310        0        0        0         0      2m
+sato  native    42        1         0       0  18,331   9,120   40,112  611,904        1         3  1h 12m
+```
+
+- **Recorded** (`<state dir>/usage/YYYY-MM-DD.jsonl`, mode 0600): time, route
+  (`native` / `api`), user, model, status, outcome (`ok` / `blocked` by the
+  guard / `rejected` for a bad key / `upstream_error`), duration, input /
+  output / cache tokens, and on `native` the tool names Claude called plus
+  Claude Code's `device_id`, `account_uuid` and `session_id`.
+- **Not recorded**: prompt text, response text, the key (only its SHA-256 is
+  stored), the client's credentials.
+- The key is removed before the request is forwarded; it never reaches
+  Anthropic.
+- `active` merges a session's requests that are at most 5 minutes apart.
+- On `api`, device / account / session, cache tokens and tool names are not
+  available and stay empty.
+- `/ws` is not covered.
+
+### Writing a plugin
+
+A CommonJS module exporting any of:
+
+```js
+module.exports = {
+  name: "mine",
+  init(options, { stateDir, log }) {},
+  // may return { identity: {...}, stripHeaders: ["x-…"], reject: { status, type, message } }
+  onRequest({ route, path, headers, body }) {},
+  onComplete(record) {},          // after the response has been sent
+  cli(argv, { stateDir, out, err }) { return 0; },   // `barnowl mine ...`
+};
+```
+
+A throwing `onRequest` rejects the request (`500`). A throwing `onComplete`
+is logged and ignored.
+
 ## Outbound PII guard
 
 An optional guard inspects **everything that would leave the machine** — and
