@@ -2297,10 +2297,15 @@ test("an unknown command is still unknown", () => {
 });
 
 test("start refuses to run with a plugin that cannot load", () => {
-  const { file } = setup({ port: 11497, plugins: { [path.join(ROOT, "missing-plugin.cjs")]: {} } });
+  const { file } = setup({ port: 11496, plugins: { [path.join(ROOT, "missing-plugin.cjs")]: {} } });
   const r = run(["start", "--no-update", "--config", file]);
-  assert.equal(r.status, 1);
-  assert.match(r.stderr, /plugin .* failed to load/);
+  try {
+    assert.equal(r.status, 1);
+    assert.match(r.stderr, /plugin .* failed to load/);
+  } finally {
+    // If the start was not refused, a real server is now running: stop it.
+    if (r.status === 0) run(["stop", "-p", "11496", "--config", file]);
+  }
 });
 
 test("BARNOWL_PLUGINS env wins over the file", () => {

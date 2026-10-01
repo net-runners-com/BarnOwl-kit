@@ -150,6 +150,11 @@ function parseFlags(argv) {
       prompt: process.env.BARNOWL_GUARD_LLM_PROMPT || gl.prompt || null,
     },
   };
+  // "plugins" block → JSON for the server process (lib/plugins.cjs). env > file.
+  // Kept as a string: validation happens in one place, plugins.load().
+  const filePlugins = f.plugins && typeof f.plugins === "object" && !Array.isArray(f.plugins) ? f.plugins : null;
+  out.pluginsJson = process.env.BARNOWL_PLUGINS
+    || (filePlugins && Object.keys(filePlugins).length ? JSON.stringify(filePlugins) : null);
   return out;
 }
 
@@ -290,6 +295,19 @@ async function cmdStart(argv) {
     console.log(`  Guard    : ON — text masked, images rejected, fail-closed (policy: ${cfg.guard.policy || "secret-guard defaults"})`);
     if (llm.url) console.log(`  Guard LLM: ${llm.model || "qwen2.5:3b"} @ ${llm.url} (verdict on masked text)`);
     console.log(`  Anthropic: ${baseUrl(cfg.port)} (point ANTHROPIC_BASE_URL here for a guarded passthrough)`);
+  }
+
+  // Plugins → env for the server process. Load them here first: a plugin that
+  // cannot load must stop the start, not be skipped inside the server.
+  if (cfg.pluginsJson) {
+    process.env.BARNOWL_PLUGINS = cfg.pluginsJson;
+    let names;
+    try { names = require("../lib/plugins.cjs").load().map((p) => p.name); }
+    catch (e) {
+      console.error(`ERROR: ${e.message}`);
+      return 1;
+    }
+    if (names.length) console.log(`  Plugins  : ${names.join(", ")}`);
   }
 
   // Make sure the speed patch is applied to our otterly copy.
@@ -577,6 +595,8 @@ function cmdHelp() {
     barnowl login [claude|codex]           Re-login (revoked / expired), no restart
     barnowl config                         Show effective config + source
     barnowl config init [path]             Create a starter config file
+    barnowl usage [--days N] [--json]      Per-user usage (usage plugin)
+    barnowl usage key add|revoke|list      Issue / revoke user keys (usage plugin)
     barnowl help | version
 
   Config file (flags > env > file > defaults):
@@ -608,6 +628,16 @@ function cmdHelp() {
     secret-guard.json is used when present. "llm" adds a second stage: any
     OpenAI-compatible LLM judges the masked text; leak verdict → 403.
 
+  Plugins (config "plugins" block, off by default):
+    { "plugins": { "usage": {} } }
+    usage — identifies callers by an admin-issued X-Barnowl-Key, records one
+    metadata line per request (no prompt text) under <state dir>/usage/, and
+    reports per user with 'barnowl usage'. Routes are tagged native
+    (/v1/messages passthrough) or api (engine routes). "requireKey": false
+    lets keyless requests through as "unknown". A path instead of a name
+    loads your own plugin.
+    env: BARNOWL_PLUGINS (the block as JSON)
+
   Env: BARNOWL_PORT, BARNOWL_WORK_DIR, BARNOWL_API_KEY, BARNOWL_AUTO_UPDATE, BARNOWL_STATE_DIR,
        BARNOWL_QUEUE_TIMEOUT, BARNOWL_MAX_CONCURRENT, BARNOWL_MAX_QUEUE, BARNOWL_RATE_LIMIT,
        BARNOWL_GUARD, BARNOWL_GUARD_POLICY, BARNOWL_GUARD_MASK_CMD, BARNOWL_GUARD_UPSTREAM,
@@ -615,6 +645,38 @@ function cmdHelp() {
        BARNOWL_GUARD_LLM_TIMEOUT_MS, BARNOWL_GUARD_LLM_MAXCHARS, BARNOWL_GUARD_LLM_PROMPT
 `);
   return 0;
+}
+
+/** `barnowl <name> ...` for a configured plugin that exports cli(). Returns an
+ *  exit code, or null when <name> is not a plugin command at all. */
+async function cmdPlugin(cmd, argv) {
+  if (!/^[a-z0-9][a-z0-9-]*$/.test(cmd)) return null;
+  const cfg = parseFlags(argv);
+  let loaded = [];
+  if (cfg.pluginsJson) {
+    process.env.BARNOWL_PLUGINS = cfg.pluginsJson;
+    try { loaded = require("../lib/plugins.cjs").load(); }
+    catch (e) {
+      console.error(`ERROR: ${e.message}`);
+      return 1;
+    }
+  }
+  const hit = loaded.find((p) => p.name === cmd && typeof p.mod.cli === "function");
+  if (hit) {
+    const args = [];
+    for (let i = 0; i < argv.length; i++) {
+      if (argv[i] === "--config") i++;
+      else args.push(argv[i]);
+    }
+    return hit.mod.cli(args, { stateDir: STATE_DIR, out: (s) => console.log(s), err: (s) => console.error(s) });
+  }
+  if (fs.existsSync(path.join(__dirname, "..", "plugins", cmd, "index.cjs"))) {
+    console.error(`"${cmd}" is a bundled plugin that is not enabled.`);
+    console.error(`Add this to ${cfg.configFile || GLOBAL_CONFIG} and restart barnowl:`);
+    console.error(`  "plugins": { "${cmd}": {} }`);
+    return 1;
+  }
+  return null;
 }
 
 // ── Dispatch ─────────────────────────────────────────────────────────────────
@@ -671,6 +733,10 @@ async function main() {
                 llm: cfg.guard.llm.url ? { url: cfg.guard.llm.url, model: cfg.guard.llm.model || "qwen2.5:3b" } : null,
               }
             : { enabled: false },
+          plugins: (() => {
+            if (!cfg.pluginsJson) return null;
+            try { return JSON.parse(cfg.pluginsJson); } catch { return "(invalid JSON)"; }
+          })(),
           configFile: cfg.configFile,
           paths: (() => {
             const detected = detectPaths();
@@ -690,9 +756,12 @@ async function main() {
     case "help":
     case "--help":
     case "-h": return cmdHelp();
-    default:
+    default: {
+      const code = cmd ? await cmdPlugin(cmd, rest) : null;
+      if (code !== null) return code;
       console.error(`Unknown command: ${cmd}. Run 'barnowl help'.`);
       return 1;
+    }
   }
 }
 
