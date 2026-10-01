@@ -570,7 +570,9 @@ sato  native    42        1         0       0  18,331   9,120   40,112  611,904 
   Anthropic.
 - `active` merges a session's requests that are at most 5 minutes apart.
 - On `api`, device / account / session, cache tokens and tool names are not
-  available and stay empty.
+  available and stay empty. `input` there counts uncached input tokens only,
+  so it is lower than the `prompt_tokens` the API response reports (which
+  includes cached tokens).
 - `/ws` is not covered.
 
 ### Writing a plugin
