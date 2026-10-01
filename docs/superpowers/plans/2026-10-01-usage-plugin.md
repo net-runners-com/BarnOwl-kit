@@ -1745,8 +1745,8 @@ async function withServers(env, upstreamHandler, fn) {
     if (v === undefined) delete process.env[k];
     else process.env[k] = v;
   }
-  guard.plugins._reset();
   try {
+    guard.plugins._reset();
     await fn({
       seen,
       post: (headers, body) => fetch(`http://127.0.0.1:${frontPort}/v1/messages`, {
