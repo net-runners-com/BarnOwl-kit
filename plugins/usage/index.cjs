@@ -18,8 +18,8 @@ const report = require("./report.cjs");
 
 const HEADER = "x-barnowl-key";
 const REJECT = {
-  status: 401,
-  type: "authentication_error",
+  status: 403,
+  type: "permission_error",
   message: "barnowl: missing or invalid X-Barnowl-Key (ask your administrator)",
 };
 const KEY_USAGE = "Usage: barnowl usage key add <user> | barnowl usage key revoke <user> | barnowl usage key list";

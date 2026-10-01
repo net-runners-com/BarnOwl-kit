@@ -543,7 +543,7 @@ export ANTHROPIC_CUSTOM_HEADERS="X-Barnowl-Key: bo_…"
 # any other client: send the header  X-Barnowl-Key: bo_…
 ```
 
-A request without a valid key gets `401`. This covers both routes, so the key
+A request without a valid key gets `403`. This covers both routes, so the key
 also locks the engine routes. `"usage": { "requireKey": false }` lets keyless
 requests through, recorded as `unknown`.
 

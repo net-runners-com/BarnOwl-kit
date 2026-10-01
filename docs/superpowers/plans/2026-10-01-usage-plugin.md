@@ -19,7 +19,7 @@
 - A key is `bo_` + 32 random bytes base64url. Only its SHA-256 hex is stored. Comparison uses `crypto.timingSafeEqual`.
 - Files written by the usage plugin: directory mode `0700`, files `0600`. Never on disk: the raw key, prompt text, response text.
 - Record `outcome` is one of `ok` | `blocked` | `rejected` | `upstream_error`.
-- Missing / unknown / revoked key → `401 authentication_error`, message `barnowl: missing or invalid X-Barnowl-Key (ask your administrator)`. `requireKey: false` records `user: "unknown"` instead.
+- Missing / unknown / revoked key → `403 permission_error`, message `barnowl: missing or invalid X-Barnowl-Key (ask your administrator)`. `requireKey: false` records `user: "unknown"` instead.
 - A throwing `onRequest` rejects with `500 plugin_error` (fail-closed). A throwing `onComplete` is logged and swallowed.
 - A configured plugin that fails to load makes `barnowl start` exit 1.
 - Active-time gap: 5 minutes.
@@ -31,7 +31,7 @@ Deviation from the spec, deliberate: the response tap is its own module, `lib/an
 ## Review Focus
 
 1. **Key header with stray whitespace** (`X-Barnowl-Key:  bo_…  `, easy to produce in `ANTHROPIC_CUSTOM_HEADERS`): a person expects the key to work → trimmed before lookup. Test in Task 5.
-2. **`keys.json` corrupted or half-written**: expect every request rejected with 401 and no crash, and the next valid write to recover. Test in Task 3.
+2. **`keys.json` corrupted or half-written**: expect every request rejected with 403 and no crash, and the next valid write to recover. Test in Task 3.
 3. **Upstream closes the stream mid-response** (network drop, client abort): expect a record with whatever was seen, not a lost request. Test in Task 6.
 4. **Huge non-streaming upstream body**: expect the tap to give up (`null` tokens) without buffering without bound. Test in Task 1.
 5. **Report over a day file containing a broken line** (crash mid-append): expect the line skipped and the rest reported. Test in Task 4.
@@ -1325,7 +1325,7 @@ test("a key with stray whitespace around it still works", () => {
   assert.equal(usage.onRequest(nativeReq({ "x-barnowl-key": `  ${key} \t` })).identity.user, "sato");
 });
 
-test("missing, wrong, revoked and duplicated keys are rejected with 401", () => {
+test("missing, wrong, revoked and duplicated keys are rejected with 403", () => {
   const { dir } = fresh();
   const key = keys.add(dir, "sato");
   const dead = keys.add(dir, "tanaka");
@@ -1333,7 +1333,7 @@ test("missing, wrong, revoked and duplicated keys are rejected with 401", () => 
   for (const headers of [{}, { "x-barnowl-key": "bo_wrong" }, { "x-barnowl-key": dead }, { "x-barnowl-key": `${key}, ${key}` }, { "x-barnowl-key": "" }]) {
     const r = usage.onRequest(nativeReq(headers));
     assert.deepEqual(r.reject, {
-      status: 401, type: "authentication_error",
+      status: 403, type: "permission_error",
       message: "barnowl: missing or invalid X-Barnowl-Key (ask your administrator)",
     });
     assert.equal(r.identity.user, null);
@@ -1504,8 +1504,8 @@ const report = require("./report.cjs");
 
 const HEADER = "x-barnowl-key";
 const REJECT = {
-  status: 401,
-  type: "authentication_error",
+  status: 403,
+  type: "permission_error",
   message: "barnowl: missing or invalid X-Barnowl-Key (ask your administrator)",
 };
 const KEY_USAGE = "Usage: barnowl usage key add <user> | barnowl usage key revoke <user> | barnowl usage key list";
@@ -1791,19 +1791,19 @@ test("no plugins configured: nothing is recorded and no usage dir appears", asyn
   assert.equal(fs.existsSync(USAGE_DIR), false);
 });
 
-test("no key → 401 in anthropic shape, upstream not called, request recorded as rejected", async () => {
+test("no key → 403 in anthropic shape, upstream not called, request recorded as rejected", async () => {
   resetLog();
   await withServers(USAGE_ON, sseReply, async ({ post, seen }) => {
     const resp = await post({}, body());
-    assert.equal(resp.status, 401);
+    assert.equal(resp.status, 403);
     assert.deepEqual(await resp.json(), {
       type: "error",
-      error: { type: "authentication_error", message: "barnowl: missing or invalid X-Barnowl-Key (ask your administrator)" },
+      error: { type: "permission_error", message: "barnowl: missing or invalid X-Barnowl-Key (ask your administrator)" },
     });
     assert.equal(seen.length, 0);
   });
   const [rec] = allRecords();
-  assert.deepEqual([rec.route, rec.user, rec.outcome, rec.status, rec.deviceId], ["native", null, "rejected", 401, "dev1"]);
+  assert.deepEqual([rec.route, rec.user, rec.outcome, rec.status, rec.deviceId], ["native", null, "rejected", 403, "dev1"]);
 });
 
 test("valid key → forwarded without the key header; tokens, tools and identity recorded; no text on disk", async () => {
@@ -2528,7 +2528,7 @@ export ANTHROPIC_CUSTOM_HEADERS="X-Barnowl-Key: bo_…"
 # any other client: send the header  X-Barnowl-Key: bo_…
 ```
 
-A request without a valid key gets `401`. This covers both routes, so the key
+A request without a valid key gets `403`. This covers both routes, so the key
 also locks the engine routes. `"usage": { "requireKey": false }` lets keyless
 requests through, recorded as `unknown`.
 
@@ -2647,7 +2647,7 @@ export ANTHROPIC_CUSTOM_HEADERS="X-Barnowl-Key: bo_…"
 # それ以外のクライアント: ヘッダー X-Barnowl-Key: bo_… を送る
 ```
 
-有効なキーがないリクエストは `401` になります。両方の経路が対象なので、
+有効なキーがないリクエストは `403` になります。両方の経路が対象なので、
 エンジン経路もキーなしでは使えなくなります。`"usage": { "requireKey": false }`
 にするとキーなしも通し、`unknown` として記録します。
 
@@ -2750,7 +2750,7 @@ ANTHROPIC_BASE_URL=http://localhost:11497 ANTHROPIC_CUSTOM_HEADERS="X-Barnowl-Ke
 cd -
 ```
 
-Expected: the first prints an API error containing `401` and `missing or invalid X-Barnowl-Key`; the second prints `pong`.
+Expected: the first prints an API error containing `403` and `missing or invalid X-Barnowl-Key`; the second prints `pong`.
 
 - [ ] **Step 4: `api` — an OpenAI-style request without and with the key**
 
@@ -2761,7 +2761,7 @@ curl -s http://localhost:11497/v1/chat/completions -H "X-Barnowl-Key: $KEY" \
   -H 'Content-Type: application/json' -d '{"model":"haiku","messages":[{"role":"user","content":"Reply with the single word: pong"}]}' | head -c 300
 ```
 
-Expected: `401`, then a chat completion JSON whose content is `pong`.
+Expected: `403`, then a chat completion JSON whose content is `pong`.
 
 - [ ] **Step 5: The report shows both routes with tokens**
 
@@ -2790,7 +2790,7 @@ curl -s -o /dev/null -w '%{http_code}\n' http://localhost:11497/v1/chat/completi
   -H 'Content-Type: application/json' -d '{"model":"haiku","messages":[{"role":"user","content":"hi"}]}'
 ```
 
-Expected: `Revoked 1 key for e2e.` then `401`.
+Expected: `Revoked 1 key for e2e.` then `403`.
 
 - [ ] **Step 8: Stop the isolated server and clean up**
 

@@ -114,7 +114,7 @@ effect without a restart. A user may hold several active keys.
 
 **`onRequest`.** Reads `x-barnowl-key`.
 - valid key → `identity.user`.
-- missing, unknown or revoked → reject `401 authentication_error` with
+- missing, unknown or revoked → reject `403 permission_error` with
   `"barnowl: missing or invalid X-Barnowl-Key (ask your administrator)"`.
   The rejected request is still recorded (`outcome: "rejected"`, `user: null`).
 - option `requireKey: false` records such requests as `user: "unknown"` and
@@ -186,7 +186,7 @@ is not recorded, and that `requireKey` also locks the engine routes.
 | --- | --- |
 | plugin fails to load | `barnowl start` fails with the reason |
 | `onRequest` throws | request rejected, `500 plugin_error` |
-| key file missing or unreadable with `requireKey: true` | every request rejected `401` (no key can match); logged once per mtime |
+| key file missing or unreadable with `requireKey: true` | every request rejected `403` (no key can match); logged once per mtime |
 | log append fails | logged to `barnowl.log`; the response is unaffected |
 | response tap cannot parse | record written with `null` token fields |
 | client disconnects mid-stream | record written with what was seen so far, `outcome` from the upstream status |
@@ -204,7 +204,7 @@ is not recorded, and that `requireKey` also locks the engine routes.
   chunks), JSON tap, record shape, file modes, no body text in the record.
 - `usage-report.test.js`: grouping by user and route, date range, active
   minutes, blocked / rejected counts.
-- `guard.test.js` additions against the existing mock upstream: no key → 401
+- `guard.test.js` additions against the existing mock upstream: no key → 403
   and the upstream is not called; valid key → forwarded without
   `x-barnowl-key`; guard-blocked request recorded with the user;
   `requireKey: false` passes as `unknown`.

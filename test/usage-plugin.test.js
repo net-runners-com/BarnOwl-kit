@@ -44,7 +44,7 @@ test("a key with stray whitespace around it still works", () => {
   assert.equal(usage.onRequest(nativeReq({ "x-barnowl-key": `  ${key} \t` })).identity.user, "sato");
 });
 
-test("missing, wrong, revoked and duplicated keys are rejected with 401", () => {
+test("missing, wrong, revoked and duplicated keys are rejected with 403", () => {
   const { dir } = fresh();
   const key = keys.add(dir, "sato");
   const dead = keys.add(dir, "tanaka");
@@ -52,7 +52,7 @@ test("missing, wrong, revoked and duplicated keys are rejected with 401", () => 
   for (const headers of [{}, { "x-barnowl-key": "bo_wrong" }, { "x-barnowl-key": dead }, { "x-barnowl-key": `${key}, ${key}` }, { "x-barnowl-key": "" }]) {
     const r = usage.onRequest(nativeReq(headers));
     assert.deepEqual(r.reject, {
-      status: 401, type: "authentication_error",
+      status: 403, type: "permission_error",
       message: "barnowl: missing or invalid X-Barnowl-Key (ask your administrator)",
     });
     assert.equal(r.identity.user, null);

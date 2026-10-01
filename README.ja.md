@@ -533,7 +533,7 @@ export ANTHROPIC_CUSTOM_HEADERS="X-Barnowl-Key: bo_…"
 # それ以外のクライアント: ヘッダー X-Barnowl-Key: bo_… を送る
 ```
 
-有効なキーがないリクエストは `401` になります。両方の経路が対象なので、
+有効なキーがないリクエストは `403` になります。両方の経路が対象なので、
 エンジン経路もキーなしでは使えなくなります。`"usage": { "requireKey": false }`
 にするとキーなしも通し、`unknown` として記録します。
 

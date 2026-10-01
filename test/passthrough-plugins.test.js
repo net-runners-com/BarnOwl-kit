@@ -112,19 +112,19 @@ test("no plugins configured: nothing is recorded and no usage dir appears", asyn
   assert.equal(fs.existsSync(USAGE_DIR), false);
 });
 
-test("no key → 401 in anthropic shape, upstream not called, request recorded as rejected", async () => {
+test("no key → 403 in anthropic shape, upstream not called, request recorded as rejected", async () => {
   resetLog();
   await withServers(USAGE_ON, sseReply, async ({ post, seen }) => {
     const resp = await post({}, body());
-    assert.equal(resp.status, 401);
+    assert.equal(resp.status, 403);
     assert.deepEqual(await resp.json(), {
       type: "error",
-      error: { type: "authentication_error", message: "barnowl: missing or invalid X-Barnowl-Key (ask your administrator)" },
+      error: { type: "permission_error", message: "barnowl: missing or invalid X-Barnowl-Key (ask your administrator)" },
     });
     assert.equal(seen.length, 0);
   });
   const [rec] = allRecords();
-  assert.deepEqual([rec.route, rec.user, rec.outcome, rec.status, rec.deviceId], ["native", null, "rejected", 401, "dev1"]);
+  assert.deepEqual([rec.route, rec.user, rec.outcome, rec.status, rec.deviceId], ["native", null, "rejected", 403, "dev1"]);
 });
 
 test("valid key → forwarded without the key header; tokens, tools and identity recorded; no text on disk", async () => {
