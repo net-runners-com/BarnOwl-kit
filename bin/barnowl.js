@@ -91,6 +91,10 @@ function parseFlags(argv) {
     else if (a === "--mcp") flags.mcp = argv[++i];
     else if (a === "--config") configPath = argv[++i];
     else if (a === "--no-update") flags.autoUpdate = "false";
+    // Granular native-tool opt-in. Comma/space-separated, e.g.
+    //   --allow-tools "Bash Read" or --allow-tools Bash,Read
+    // Default kill-list stays applied; only names given here are subtracted.
+    else if (a === "--allow-tools") flags.allowTools = argv[++i];
   }
 
   const file = loadConfigFile(configPath);
@@ -105,6 +109,7 @@ function parseFlags(argv) {
     rateLimit: process.env.BARNOWL_RATE_LIMIT,
     apiKey: process.env.BARNOWL_API_KEY,
     autoUpdate: process.env.BARNOWL_AUTO_UPDATE,
+    allowTools: process.env.BARNOWL_ALLOW_TOOLS,
   };
 
   const pick = (key) => {
@@ -126,6 +131,7 @@ function parseFlags(argv) {
     rateLimit: pick("rateLimit"),
     apiKey: pick("apiKey"),
     autoUpdate: !["0", "false", "no", "off"].includes(String(pick("autoUpdate")).toLowerCase()),
+    allowTools: pick("allowTools"),
     configFile: file ? file.path : null,
   };
   // "mcp": false / "none" in the file explicitly disables MCP even if env sets it
@@ -313,6 +319,15 @@ async function cmdStart(argv) {
     } else {
       console.error(`  WARN: mcp profile not found: ${cfg.mcp} (looked at ${direct}, ${named})`);
     }
+  }
+
+  // --allow-tools "Bash Read" / BARNOWL_ALLOW_TOOLS=Bash,Read
+  // Subtracted from otterly's native-tool kill list (see lib/patch-otterly.js).
+  // Keeps the default fast path (no tools) and only lifts restrictions for the
+  // names you spell out — a feature like `--seal` relies on Bash alone.
+  if (cfg.allowTools) {
+    process.env.BARNOWL_ALLOW_TOOLS = cfg.allowTools;
+    console.log(`  Native tools allowed: ${cfg.allowTools} (default is none)`);
   }
 
   const existing = readPid();
@@ -568,7 +583,8 @@ function cmdHelp() {
   barnowl v${PKG.version} — fast OpenAI-compatible local Claude server
 
   Usage:
-    barnowl start [-p <port>] [-d <dir>] [--mcp <profile>] [--config <file>] [--no-update]
+    barnowl start [-p <port>] [-d <dir>] [--mcp <profile>] [--allow-tools <names>]
+                  [--config <file>] [--no-update]
     barnowl stop  [-p <port>]              Stop the server
     barnowl restart                        Restart
     barnowl status                         Health check (JSON)
@@ -608,8 +624,16 @@ function cmdHelp() {
     secret-guard.json is used when present. "llm" adds a second stage: any
     OpenAI-compatible LLM judges the masked text; leak verdict → 403.
 
+  Native tool opt-in (default: ALL disabled → fast chat path):
+    --allow-tools "Bash"             enable just these for the spawned claude CLI
+    BARNOWL_ALLOW_TOOLS="Bash,Read"   same, via env (comma or space separated)
+    BARNOWL_ENABLE_TOOLS=1           re-enable EVERY native tool (slow)
+    seal relay (lib/seal/relay.js) needs --allow-tools Bash to let the model
+    spawn python3 and decrypt the inlined ciphertext.
+
   Env: BARNOWL_PORT, BARNOWL_WORK_DIR, BARNOWL_API_KEY, BARNOWL_AUTO_UPDATE, BARNOWL_STATE_DIR,
        BARNOWL_QUEUE_TIMEOUT, BARNOWL_MAX_CONCURRENT, BARNOWL_MAX_QUEUE, BARNOWL_RATE_LIMIT,
+       BARNOWL_ALLOW_TOOLS, BARNOWL_ENABLE_TOOLS,
        BARNOWL_GUARD, BARNOWL_GUARD_POLICY, BARNOWL_GUARD_MASK_CMD, BARNOWL_GUARD_UPSTREAM,
        BARNOWL_GUARD_LLM_URL, BARNOWL_GUARD_LLM_MODEL, BARNOWL_GUARD_LLM_KEY,
        BARNOWL_GUARD_LLM_TIMEOUT_MS, BARNOWL_GUARD_LLM_MAXCHARS, BARNOWL_GUARD_LLM_PROMPT
