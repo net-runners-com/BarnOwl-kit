@@ -548,6 +548,82 @@ export ANTHROPIC_BASE_URL=http://localhost:11435
 claude
 ```
 
+## Sealed chat (seal relay)
+
+A client-side helper that keeps the **payload** of a request out of
+barnowl's own logs and whatever TLS-terminating middle layer sits between
+the client and barnowl. The payload is AES-256-GCM encrypted with a fresh
+ephemeral key before it leaves the client; the key, IV and ciphertext are
+inlined into the system prompt that tells Claude to decrypt via Bash +
+Python. Claude runs the shell command, sees the plaintext inside its own
+reasoning, and returns the answer. Honest about what this does and does
+not hide:
+
+| Layer | Hidden? |
+| --- | --- |
+| client ↔ barnowl (localhost, other processes sniffing) | ✅ ciphertext only |
+| barnowl own log files, request body dumps | ✅ ciphertext only |
+| Anthropic / upstream after Claude decrypts | ❌ plaintext in Claude's reasoning context |
+| Response moderation and safety classifier | ❌ fully applies to the decrypted intent |
+
+Use seal when: internal customer records, config files, request bodies
+you want kept out of audit logs. Don't use seal when: trying to hide
+intent from the vendor — the task text and decrypted plaintext still
+reach the model.
+
+Setup:
+
+```bash
+# Grant the spawned claude CLI *only* the Bash tool. Default is "all
+# native tools disabled" (the fast path, ~6s per request); --allow-tools
+# subtracts named tools from that kill-list.
+barnowl start --allow-tools Bash
+# or in config.json:  "allowTools": "Bash"
+# or env var:          BARNOWL_ALLOW_TOOLS=Bash
+```
+
+```js
+import { createRequire } from "module";
+const require = createRequire(import.meta.url);
+const { sealRelay } = require("barnowl/lib/seal/relay.js");
+
+const res = await sealRelay({
+  payload: "機密データ: 田中太郎 34歳 営業部",
+  task:    "添付の社員レコードを 1 文で要約して",
+  model:   "sonnet",
+});
+console.log(res.choices[0].message.content);
+// → "田中太郎さん(34歳)は営業部に所属する社員です。"
+```
+
+Design notes:
+
+- **Ephemeral key per call** (`newKey()` in `lib/seal/crypto.js`). The raw
+  key `Buffer` is zero-filled after the request; the hex-encoded copy
+  embedded in the prompt lives in the serialized JSON body and in JS
+  string memory (immutable, cannot be scrubbed).
+- **Authenticated encryption**: GCM auth tag is appended to the
+  ciphertext, so tampering with the inlined bytes fails `decrypt(...)`
+  inside the shell command rather than silently producing garbage.
+- **tool_result boundary**: Claude treats the decrypted text as
+  tool output (data), not a new instruction turn. Prompt-injection
+  attempts embedded in the plaintext don't get a free upgrade to
+  `role: "user"`.
+- **Requires `--allow-tools Bash`**. If Bash is in the kill-list, the
+  system prompt tells Claude to say
+  `"sealed-mode requires --allow-tools Bash"` and stop.
+- **vs. the Outbound PII guard**: these solve different problems. The
+  guard sees plaintext and tokenises PII before it leaves the machine
+  (and refuses binary data). Seal keeps a specific payload opaque
+  through middle layers but lets the vendor see the plaintext. Use the
+  guard to protect against the vendor; use seal to protect against the
+  pipe. They can be enabled together.
+
+See `test/seal.test.js`, `test/seal-relay.test.js`,
+`test/patch-tools.test.js` for the 20 unit tests covering the crypto
+chain, the patch IIFE under every env variant, and the system-prompt
+shape.
+
 ## Configuration (config file)
 
 Declare everything once and start with no flags. Resolution:
@@ -577,6 +653,10 @@ barnowl config         # show the effective config + which file was used
 - `apiKey` in the file sets `BARNOWL_API_KEY` (Bearer auth) on start.
 - `autoUpdate` — `false` stops `start` from fast-forwarding a git clone to
   `origin/main`.
+- `allowTools` — same as the `--allow-tools` flag / `BARNOWL_ALLOW_TOOLS`
+  env: space/comma list of native tools to subtract from the default
+  kill-list (e.g. `"Bash"` for seal relay). Default is unset → all
+  disabled.
 
 ## Configuration (env vars)
 
@@ -590,6 +670,8 @@ barnowl config         # show the effective config + which file was used
 | `BARNOWL_MAX_CONCURRENT`  | `5`       | Max concurrent requests         |
 | `BARNOWL_MAX_QUEUE`       | `50`      | Max queued requests             |
 | `BARNOWL_RATE_LIMIT`      | `60`      | Requests/min per client         |
+| `BARNOWL_ALLOW_TOOLS`     | (unset)   | Space/comma list of native tools to re-enable (e.g. `Bash` for seal relay). Default kill-list stays applied; names here are subtracted. |
+| `BARNOWL_ENABLE_TOOLS`    | `0`       | `1` re-enables EVERY native tool (full regression — slow). |
 | `BARNOWL_SESSION_IDLE`    | `600`     | Warm session idle reap (seconds) |
 | `BARNOWL_MAX_SESSIONS`    | `8`       | Max live session processes      |
 | `BARNOWL_WARM_SESSIONS`   | (on)      | `off` disables the warm pool    |

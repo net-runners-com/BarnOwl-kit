@@ -501,6 +501,75 @@ Claude Code ── ANTHROPIC_BASE_URL=http://localhost:11435 ──► barnowl
 環境変数: `BARNOWL_GUARD` `BARNOWL_GUARD_POLICY` `BARNOWL_GUARD_MASK_CMD`
 `BARNOWL_GUARD_UPSTREAM`
 
+## 封印チャット（seal relay）
+
+クライアント側のヘルパー。リクエストの **ペイロード** を、barnowl 自身の
+ログや、クライアント↔barnowl 間に挟まる TLS 終端中間層から隔離します。
+ペイロードはクライアントを出る前にセッションごとに生成した AES-256-GCM
+鍵で暗号化され、その鍵・IV・暗号文を Bash + Python で復号せよと指示する
+system prompt に埋め込んで送ります。Claude がシェル経由で復号し、平文を
+自分の推論コンテキスト内で読み、答えを返します。何を隠し、何を隠さないか:
+
+| レイヤ | 隠れる？ |
+| --- | --- |
+| client ↔ barnowl（localhost、他プロセスの snooping） | ✅ 暗号文のみ |
+| barnowl 自身のログ・リクエストダンプ | ✅ 暗号文のみ |
+| Claude が復号した後の Anthropic / upstream | ❌ Claude の推論コンテキストに平文 |
+| 応答モデレーション・safety 分類器 | ❌ 復号後の意図にそのまま適用される |
+
+**向いている用途**: 社内の顧客レコード、設定ファイル、監査ログに平文を
+残したくないリクエスト。**向かない用途**: ベンダから意図を隠す目的 —
+タスク文も復号後の内容もモデルには届きます。
+
+セットアップ:
+
+```bash
+# spawn される claude CLI に Bash tool だけを許可する。デフォルトは
+# 「全ネイティブツール無効」(fast path, 1 リクエスト ~6s) で、
+# --allow-tools はそのキルリストから指定分だけ差し引きます。
+barnowl start --allow-tools Bash
+# もしくは config.json に  "allowTools": "Bash"
+# もしくは環境変数で       BARNOWL_ALLOW_TOOLS=Bash
+```
+
+```js
+import { createRequire } from "module";
+const require = createRequire(import.meta.url);
+const { sealRelay } = require("barnowl/lib/seal/relay.js");
+
+const res = await sealRelay({
+  payload: "機密データ: 田中太郎 34歳 営業部",
+  task:    "添付の社員レコードを 1 文で要約して",
+  model:   "sonnet",
+});
+console.log(res.choices[0].message.content);
+// → "田中太郎さん(34歳)は営業部に所属する社員です。"
+```
+
+設計メモ:
+
+- **呼び出しごとに ephemeral key**（`lib/seal/crypto.js` の `newKey()`）。
+  生の `Buffer` はリクエスト直後にゼロ埋め。system prompt に埋めた
+  hex 文字列と JSON body 中の値は JS String なので zero-fill 不可。
+- **認証付き暗号**: GCM の auth tag を暗号文末尾に連結しているため、
+  埋め込みバイト列を改変すると復号時に失敗します（破損したバイト列を
+  黙って通さない）。
+- **tool_result 境界**: 復号後のテキストは Claude からは「ツール出力
+  (データ)」として扱われ、新しい指示 (role=user) に昇格しません。
+  復号結果に prompt injection が仕込まれていても、system+user の
+  本来の指示が優先されます。
+- **Bash 必須**: `--allow-tools Bash` なしで seal relay を使うと、
+  system prompt に書かれたエスケープハッチが発動して Claude は
+  「sealed-mode requires --allow-tools Bash」と返して停止します。
+- **送信 PII ガードとの比較**: 両者は別物。ガードは平文を見てから
+  トークナイズして送るので **ベンダに個人情報を見せない** 用途。
+  seal は payload を中間層から隠すが **ベンダは復号後の平文を見る**。
+  併用可能。
+
+テストは `test/seal.test.js` `test/seal-relay.test.js`
+`test/patch-tools.test.js` で、暗号チェーン・patch IIFE の env 変種・
+system prompt 構造を網羅した 20 ケース。
+
 ## 設定（設定ファイル）
 
 一度書いておけばフラグなしで起動できます。優先順位:
@@ -530,6 +599,10 @@ barnowl config         # 有効な設定と、どのファイルが使われた�
 - ファイル内の `apiKey` は起動時に `BARNOWL_API_KEY`（Bearer 認証）として設定されます。
 - `autoUpdate` — `false` にすると `start` 時の `origin/main` への
   fast-forward を行いません。
+- `allowTools` — `--allow-tools` フラグ / `BARNOWL_ALLOW_TOOLS` 環境変数と
+  同じ。デフォルトのキルリストから差し引く native tool 名をスペース/
+  カンマ区切りで指定（例: seal relay 用の `"Bash"`）。未設定 →
+  全ツール無効。
 
 ## 設定（環境変数）
 
@@ -543,6 +616,8 @@ barnowl config         # 有効な設定と、どのファイルが使われた�
 | `BARNOWL_MAX_CONCURRENT`  | `5`       | 最大同時リクエスト数            |
 | `BARNOWL_MAX_QUEUE`       | `50`      | 最大キュー数                    |
 | `BARNOWL_RATE_LIMIT`      | `60`      | クライアントごとの毎分リクエスト数 |
+| `BARNOWL_ALLOW_TOOLS`     | (未設定)  | スペース/カンマ区切りで復活させるネイティブツール名（例: seal relay 用の `Bash`）。デフォルトのキルリストはそのまま適用され、ここに書いた名前だけ差し引かれる。 |
+| `BARNOWL_ENABLE_TOOLS`    | `0`       | `1` にすると全ネイティブツールを復活（完全な regression — 遅くなる）。 |
 | `BARNOWL_SESSION_IDLE`    | `600`     | ウォームセッション回収までの秒数 |
 | `BARNOWL_MAX_SESSIONS`    | `8`       | live セッションプロセスの上限   |
 | `BARNOWL_WARM_SESSIONS`   | （有効）  | `off` でウォームプール無効化    |
