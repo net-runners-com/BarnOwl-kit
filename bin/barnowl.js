@@ -328,6 +328,18 @@ async function cmdStart(argv) {
   if (cfg.allowTools) {
     process.env.BARNOWL_ALLOW_TOOLS = cfg.allowTools;
     console.log(`  Native tools allowed: ${cfg.allowTools} (default is none)`);
+    // Enabling Bash is what makes seal relay work and also what hands the
+    // spawned model a shell. Say out loud whether the controls that fence it
+    // back in are active, so an off switch is never silent.
+    if (/\bBash\b/.test(cfg.allowTools)) {
+      const fwOff = ["off", "0", "false"].includes(String(process.env.BARNOWL_SEAL_FIREWALL || "on").toLowerCase());
+      const sbxOff = String(process.env.BARNOWL_SEAL_SANDBOX || "auto").toLowerCase() === "off";
+      console.log(`  Sealed-turn tool firewall: ${fwOff ? "OFF (BARNOWL_SEAL_FIREWALL)" : "on"}` +
+                  `, decrypt sandbox: ${sbxOff ? "OFF (BARNOWL_SEAL_SANDBOX)" : "auto"}`);
+      if (fwOff && sbxOff) {
+        console.error("  WARN: Bash is enabled with both seal controls off — a sealed turn can run any command.");
+      }
+    }
   }
 
   const existing = readPid();
@@ -629,11 +641,17 @@ function cmdHelp() {
     BARNOWL_ALLOW_TOOLS="Bash,Read"   same, via env (comma or space separated)
     BARNOWL_ENABLE_TOOLS=1           re-enable EVERY native tool (slow)
     seal relay (lib/seal/relay.js) needs --allow-tools Bash to let the model
-    spawn python3 and decrypt the inlined ciphertext.
+    spawn python3 and decrypt the inlined ciphertext. Bash is then fenced in
+    for that turn: the tool firewall allows exactly one Bash call whose
+    command matches the decrypt command barnowl wrote (SHA-256 of the
+    whitespace-normalized text), denies every other tool, and the command
+    itself runs under an OS sandbox with no network and no writes.
+    BARNOWL_SEAL_FIREWALL=off / BARNOWL_SEAL_SANDBOX=off to opt out.
 
   Env: BARNOWL_PORT, BARNOWL_WORK_DIR, BARNOWL_API_KEY, BARNOWL_AUTO_UPDATE, BARNOWL_STATE_DIR,
        BARNOWL_QUEUE_TIMEOUT, BARNOWL_MAX_CONCURRENT, BARNOWL_MAX_QUEUE, BARNOWL_RATE_LIMIT,
        BARNOWL_ALLOW_TOOLS, BARNOWL_ENABLE_TOOLS,
+       BARNOWL_SEAL_FIREWALL, BARNOWL_SEAL_SANDBOX, BARNOWL_SEAL_SCAN, BARNOWL_SEAL_MAX_BYTES,
        BARNOWL_GUARD, BARNOWL_GUARD_POLICY, BARNOWL_GUARD_MASK_CMD, BARNOWL_GUARD_UPSTREAM,
        BARNOWL_GUARD_LLM_URL, BARNOWL_GUARD_LLM_MODEL, BARNOWL_GUARD_LLM_KEY,
        BARNOWL_GUARD_LLM_TIMEOUT_MS, BARNOWL_GUARD_LLM_MAXCHARS, BARNOWL_GUARD_LLM_PROMPT

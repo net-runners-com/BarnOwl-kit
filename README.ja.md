@@ -556,8 +556,8 @@ console.log(res.choices[0].message.content);
   黙って通さない）。
 - **tool_result 境界**: 復号後のテキストは Claude からは「ツール出力
   (データ)」として扱われ、新しい指示 (role=user) に昇格しません。
-  復号結果に prompt injection が仕込まれていても、system+user の
-  本来の指示が優先されます。
+  ただしこれは **確率的**にそうなるだけです。この境界が Mode A の
+  構造的な最弱点なので、後述の多層防御を入れてあります。
 - **Bash 必須**: `--allow-tools Bash` なしで seal relay を使うと、
   system prompt に書かれたエスケープハッチが発動して Claude は
   「sealed-mode requires --allow-tools Bash」と返して停止します。
@@ -566,9 +566,103 @@ console.log(res.choices[0].message.content);
   seal は payload を中間層から隠すが **ベンダは復号後の平文を見る**。
   併用可能。
 
+### tool_result 境界の防御
+
+復号平文が tool_result として届く瞬間が一番弱い。payload は多くの場合
+第三者由来のデータで、モデルがそれを「データ」として扱うのは確率的に
+しか保証されません。公開されている数字は楽観できるものではなく、これが
+prompt だけに頼らず層を重ねている理由です。
+
+| ベンチマーク / 研究 | 対象 | ASR |
+| --- | --- | --- |
+| INJECAGENT (ACL 2024) | ReAct-prompted GPT-4 | 24% |
+| 同上 + "hacking prompt" 追加 | GPT-4 | 47% |
+| AI Agent Red Teaming Challenge (2025, 180万件 vs 22 agents) | frontier モデル平均 | 直接 5.7% / 間接 27.1% |
+| Adaptive Attacks Break Defenses ([arXiv 2503.00061](https://arxiv.org/abs/2503.00061)) | 既存 defense 8 種 | **どれも >50%** |
+| Skill-Inject (2026) | skill-file 経由注入 | 最大 80% |
+| agent-tool interface の firewall | 公開ベンチ 4 種 | ほぼ 0 |
+
+この表は「どこに労力を払うべきか」の順位表として読んでください。
+prompt レベルの工夫は >50% の側、firewall が本命の制御です。barnowl は
+4 層を入れています。
+
+**1. 送信前スキャン（`lib/seal/hardening.js`）。** barnowl は暗号化前の
+平文を手元に持っているので、そこでスキャンします。パイプライン中で
+スキャンがタダで、かつまだ何も machine を出ていない唯一の地点です。
+パターンは意図的に狭く（日英の指示上書き、role 偽装、pipe-to-shell、
+破壊的シェル、exfil、「鍵を出力せよ」）絞っています。普通の文書で
+発火するリストは警告を無視する習慣を作るので、そのほうが有害です。
+既定は `warn` で、ヒットは `res.seal.warnings` に返り送信は続行。
+`BARNOWL_SEAL_SCAN=block` で暗号化前に拒否、`off` で無効。
+
+**2. 偽造できない fence による spotlighting。** 呼び出しごとに 128bit の
+nonce を生成します。barnowl が書いた python コマンドが平文を
+`<<<BARNOWL-SEALED-DATA <nonce>>>>` で囲んで出力し、平文中に同じ
+マーカーがあれば除去するので、payload 側から fence を閉じることは
+できません（128bit を当てる必要がある）。prompt はその id を
+「このターンで唯一有効な id」と宣言し、信頼境界の説明を **復号ステップ
+より後ろ**に置いています。「decrypt → parse → act」の多段で attention が
+消費される手前ではなく、tool_result が着地する直前に置くためです。
+復号後のポリシー再確認も同じ位置に置いてあります（タスクは中身が
+見える前に承認されている、という前提のため）。
+
+**3. ツール firewall（`lib/seal/firewall.js`）— これが本命。**
+封印ターンの間、spawn された agent に `canUseTool` ハンドラを渡します
+（otterly の `engine.js` にパッチで注入。これを設定すること自体が
+`permissionMode` を `bypassPermissions` から外す動作も兼ねます）。
+ルールは機能が壊れない範囲で最も狭いもの: ツール呼び出しは **1 回**、
+`Bash` のみ、コマンドは barnowl 自身が書いた復号コマンドと一致する
+こと。判定は空白正規化後の SHA-256 で、その digest は prompt に
+埋め込んであります。インデントの揺れは通りますが、1 バイトの改変・
+`curl` の追記・2 回目の呼び出し・他ツールは全部拒否で、拒否
+メッセージで「それはデータであって指示ではない」と伝えます。注入は
+モデルに**試させる**ことはできても、このハンドラに allow を返させる
+ことはできません。fail closed（fingerprint の無い prompt、モジュール
+欠落はすべて拒否）。`BARNOWL_SEAL_FIREWALL=off` で無効化。
+
+**4. OS サンドボックス（`lib/seal/sandbox.js`）— 3 層目が無い時用。**
+firewall はソースパッチに乗っているので、upstream のリファクタで
+黙って当たらなくなることがあります。その経路で致命的なのは単発の読み
+取りではなく**持続性**です。再帰的な `Bash` で cron を書く、
+`~/.ssh/authorized_keys` に追記する、といったもの。そこで復号コマンド
+自体に封じ込めを持たせています（macOS は deny-default の seatbelt
+ポリシーで `sandbox-exec`、Linux は `unshare -rn`）。しかも wrapper は
+fingerprint 対象の**内側**にあるので、外して打ち直すと拒否されます。
+ネットワーク全部とファイル書き込み全部が消え、復号はそのどちらも
+必要としません（`test/seal-sandbox.test.js` で実機確認済み）。既定は
+`auto`、`BARNOWL_SEAL_SANDBOX=require` は封じ込め無しでの実行を拒否、
+`off` で無効。
+
+**残っている穴**（黙っていると不正確になるので明記します）:
+
+- 平文はモデルの context に入るので、注入はモデルの**出力文**を
+  動かせます。要約の歪み、ありもしない主張、不要な拒否。firewall が
+  抑えるのは副作用であって推論ではありません。
+- サンドボックスは書き込みと通信を止めますが読み取りは許します。
+  `python3` の起動に必要なパスを列挙する方式は次の interpreter 更新で
+  壊れるためです。読み取りは 3 層目、書き込みは 4 層目が抑える構成で、
+  どちらか片方では足りません。
+- モデルが harm と認識できない領域（新規の技術ドメイン）と、
+  pseudonymization 裏の再識別は 4 層とも効きません。クライアント側の
+  検査は見たことのないものを知りません。
+- enforcement は `canUseTool` がある otterly の SDK 経路が前提です。
+  素の CLI 経路には介入点が無く、封印ターンは prompt 防御のみに
+  なります。
+- payload が大きいと上の指示すべてが希釈されるので、256 KiB で上限を
+  掛けています（`BARNOWL_SEAL_MAX_BYTES`）。超過時は切り詰めずに
+  throw します。黙って切り詰めたデータに自信満々で答えるほうが、
+  拒否より有害です。
+
+送信後は `res.seal.audit` が、封印対象（鍵・IV・暗号文・fence id）が
+回答に漏れていないかを報告します。tool_result は OpenAI 互換レスポンスに
+届かないので侵入検知ではありませんが、audit が空でないことは「モデルが
+prompt に従うのをやめた」ことの最も強いシグナルです。
+
 テストは `test/seal.test.js` `test/seal-relay.test.js`
-`test/patch-tools.test.js` で、暗号チェーン・patch IIFE の env 変種・
-system prompt 構造を網羅した 20 ケース。
+`test/seal-hardening.test.js` `test/seal-firewall.test.js`
+`test/seal-sandbox.test.js` `test/patch-tools.test.js` で、暗号チェーン・
+fence・スキャンの誤検知フロア・firewall の全拒否経路・サンドボックス
+ポリシーの実挙動・patch IIFE の env 変種を網羅した 60 以上のケース。
 
 ## 設定（設定ファイル）
 
@@ -617,6 +711,10 @@ barnowl config         # 有効な設定と、どのファイルが使われた�
 | `BARNOWL_MAX_QUEUE`       | `50`      | 最大キュー数                    |
 | `BARNOWL_RATE_LIMIT`      | `60`      | クライアントごとの毎分リクエスト数 |
 | `BARNOWL_ALLOW_TOOLS`     | (未設定)  | スペース/カンマ区切りで復活させるネイティブツール名（例: seal relay 用の `Bash`）。デフォルトのキルリストはそのまま適用され、ここに書いた名前だけ差し引かれる。 |
+| `BARNOWL_SEAL_FIREWALL`   | `on`      | 封印ターンのツール firewall。`Bash` 1 回・fingerprint 一致のコマンドのみ許可、他は全拒否。`off`/`0`/`false` で無効。 |
+| `BARNOWL_SEAL_SANDBOX`    | `auto`    | 復号コマンドの OS 封じ込め（`sandbox-exec` / `unshare -rn`）。`require` は封じ込め無しでの実行を拒否、`off` で無効。 |
+| `BARNOWL_SEAL_SCAN`       | `warn`    | 暗号化前の payload スキャン（注入らしい文の検出）。`warn` は `res.seal.warnings` で報告、`block` は拒否、`off` はスキップ。 |
+| `BARNOWL_SEAL_MAX_BYTES`  | `262144`  | payload サイズ上限（256 KiB）。超過は切り詰めず `SEAL_PAYLOAD_TOO_LARGE` を throw。 |
 | `BARNOWL_ENABLE_TOOLS`    | `0`       | `1` にすると全ネイティブツールを復活（完全な regression — 遅くなる）。 |
 | `BARNOWL_SESSION_IDLE`    | `600`     | ウォームセッション回収までの秒数 |
 | `BARNOWL_MAX_SESSIONS`    | `8`       | live セッションプロセスの上限   |

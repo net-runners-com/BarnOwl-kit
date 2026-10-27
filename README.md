@@ -606,9 +606,9 @@ Design notes:
   ciphertext, so tampering with the inlined bytes fails `decrypt(...)`
   inside the shell command rather than silently producing garbage.
 - **tool_result boundary**: Claude treats the decrypted text as
-  tool output (data), not a new instruction turn. Prompt-injection
-  attempts embedded in the plaintext don't get a free upgrade to
-  `role: "user"`.
+  tool output (data), not a new instruction turn — but only
+  probabilistically. That boundary is the structural weak point of this
+  mode, so it gets its own stack of defenses (below).
 - **Requires `--allow-tools Bash`**. If Bash is in the kill-list, the
   system prompt tells Claude to say
   `"sealed-mode requires --allow-tools Bash"` and stop.
@@ -619,10 +619,108 @@ Design notes:
   guard to protect against the vendor; use seal to protect against the
   pipe. They can be enabled together.
 
+### Defending the tool_result boundary
+
+The moment the decrypted plaintext lands as a tool result is where this
+mode is weakest: the payload is usually third-party data, and the model
+reads tool output as data only most of the time. The published numbers
+are not reassuring, and they are the reason the defenses here are
+layered rather than prompt-only:
+
+| Benchmark / study | Target | ASR |
+| --- | --- | --- |
+| INJECAGENT (ACL 2024) | ReAct-prompted GPT-4 | 24% |
+| ↑ plus a "hacking prompt" suffix | GPT-4 | 47% |
+| AI Agent Red Teaming Challenge (2025, 1.8M attacks vs 22 agents) | frontier models, avg | 5.7% direct / 27.1% indirect |
+| Adaptive Attacks Break Defenses ([arXiv 2503.00061](https://arxiv.org/abs/2503.00061)) | 8 published defenses | **>50% against every one** |
+| Skill-Inject (2026) | skill-file injection | up to 80% |
+| firewall at the agent-tool interface | 4 public benchmarks | ~0 |
+
+Read that table as a ranking of where to spend effort. Prompt-level
+tricks are in the >50% bucket; the firewall is the control. barnowl
+ships four layers:
+
+**1. Pre-flight scan (`lib/seal/hardening.js`).** barnowl holds the
+plaintext before it is encrypted, so it scans there — the only point in
+the pipeline where a scan is free and nothing has left the machine yet.
+The pattern list is deliberately narrow (instruction-override text in
+English and Japanese, role spoofing, pipe-to-shell, destructive shell,
+exfil, "print the key") because a list that fires on ordinary documents
+trains you to ignore it. Default `warn`: hits come back on
+`res.seal.warnings` and the request still goes. `BARNOWL_SEAL_SCAN=block`
+refuses before encryption; `off` skips it.
+
+**2. Spotlighting with an unforgeable fence.** Each call mints a 128-bit
+nonce. The python command barnowl wrote prints the plaintext between
+`<<<BARNOWL-SEALED-DATA <nonce>>>>` markers and strips any copy of those
+markers found inside the plaintext, so a payload cannot close the fence
+early — it would have to guess 128 bits. The prompt names that id as the
+only valid one for the turn and states the trust boundary *after* the
+decrypt step, where the "decrypt → parse → act" chain would otherwise
+have eaten the model's attention. A post-decrypt policy re-check is
+stated in the same place: the task was approved before the content was
+visible.
+
+**3. Tool firewall (`lib/seal/firewall.js`) — this is the control.**
+During a sealed turn the spawned agent gets a `canUseTool` handler
+(patched into otterly's `engine.js`; setting it is also what flips
+`permissionMode` off `bypassPermissions`). The rule is the narrowest one
+that still works: **one** tool call, it must be `Bash`, and its command
+must match the decrypt command barnowl itself wrote — verified by
+SHA-256 of the whitespace-normalized text, whose digest is embedded in
+the prompt. Re-indentation is fine; one changed byte, an appended
+`curl`, a second call, or any other tool is denied with a message
+telling the model the data is not an instruction. An injection can still
+persuade the model to *try*; it cannot make the handler return allow.
+Fails closed — a prompt without a fingerprint, or a missing firewall
+module, denies everything. `BARNOWL_SEAL_FIREWALL=off` opts out.
+
+**4. OS sandbox (`lib/seal/sandbox.js`) — for when layer 3 is absent.**
+The firewall rides on a source patch, and a patch can silently stop
+applying after an upstream refactor. The severe outcome on that path is
+not a one-shot read, it is persistence: a recursive `Bash` call that
+writes a cron entry or appends to `~/.ssh/authorized_keys`. So the
+decrypt command carries its own containment — `sandbox-exec` with a
+deny-default seatbelt policy on macOS, `unshare -rn` on Linux — and the
+wrapper is *inside* the fingerprinted text, so a model that drops it is
+denied. All network and all filesystem writes are gone; the decrypt
+needs neither (verified end to end in `test/seal-sandbox.test.js`).
+`auto` by default, `BARNOWL_SEAL_SANDBOX=require` refuses to run
+uncontained, `off` disables it.
+
+**What is still open**, because saying otherwise would be dishonest:
+
+- The plaintext does reach the model's context, so injection can still
+  steer the model's *text* — a wrong summary, a fabricated claim, a
+  refusal it should not make. The firewall bounds side effects, not
+  reasoning.
+- The sandbox denies writes and network but allows reads, since
+  enumerating every path `python3` needs to start breaks on the next
+  interpreter upgrade. Reads are bounded by layer 3, writes by layer 4;
+  neither alone is enough.
+- Harm the model cannot recognise (novel technical domains) and
+  re-identification behind pseudonymization are untouched by all four
+  layers. No client-side check knows what it has never seen.
+- Enforcement needs otterly's SDK path, where `canUseTool` exists. On the
+  plain-CLI path there is no interception point and a sealed turn is
+  prompt-defended only.
+- A large payload dilutes every instruction above, so payloads are capped
+  at 256 KiB (`BARNOWL_SEAL_MAX_BYTES`) and the relay throws rather than
+  truncating — a confident answer about silently truncated data is worse
+  than a refusal.
+
+Post-flight, `res.seal.audit` flags sealed material that leaked into the
+answer (key, IV, ciphertext, fence id). It is not intrusion detection —
+tool results never reach the OpenAI-compat response — but a non-empty
+audit is the strongest available signal that the model stopped following
+the prompt.
+
 See `test/seal.test.js`, `test/seal-relay.test.js`,
-`test/patch-tools.test.js` for the 20 unit tests covering the crypto
-chain, the patch IIFE under every env variant, and the system-prompt
-shape.
+`test/seal-hardening.test.js`, `test/seal-firewall.test.js`,
+`test/seal-sandbox.test.js` and `test/patch-tools.test.js` for the 60+
+unit tests covering the crypto chain, the fence, the scan's false-positive
+floor, every firewall denial path, the sandbox policy's real behaviour, and
+the patch IIFE under each env variant.
 
 ## Configuration (config file)
 
@@ -671,6 +769,10 @@ barnowl config         # show the effective config + which file was used
 | `BARNOWL_MAX_QUEUE`       | `50`      | Max queued requests             |
 | `BARNOWL_RATE_LIMIT`      | `60`      | Requests/min per client         |
 | `BARNOWL_ALLOW_TOOLS`     | (unset)   | Space/comma list of native tools to re-enable (e.g. `Bash` for seal relay). Default kill-list stays applied; names here are subtracted. |
+| `BARNOWL_SEAL_FIREWALL`   | `on`      | Tool firewall for sealed turns: one `Bash` call, fingerprint-matched command, everything else denied. `off`/`0`/`false` opts out. |
+| `BARNOWL_SEAL_SANDBOX`    | `auto`    | OS containment for the decrypt command (`sandbox-exec` / `unshare -rn`). `require` refuses to run uncontained; `off` disables. |
+| `BARNOWL_SEAL_SCAN`       | `warn`    | Pre-encryption payload scan for injection-shaped text: `warn` reports on `res.seal.warnings`, `block` refuses, `off` skips. |
+| `BARNOWL_SEAL_MAX_BYTES`  | `262144`  | Payload size cap (256 KiB). Oversized payloads throw `SEAL_PAYLOAD_TOO_LARGE` rather than being truncated. |
 | `BARNOWL_ENABLE_TOOLS`    | `0`       | `1` re-enables EVERY native tool (full regression — slow). |
 | `BARNOWL_SESSION_IDLE`    | `600`     | Warm session idle reap (seconds) |
 | `BARNOWL_MAX_SESSIONS`    | `8`       | Max live session processes      |
