@@ -641,6 +641,47 @@ function cmdHelp() {
   return 0;
 }
 
+// ── seal-probe ───────────────────────────────────────────────────────────────
+// Fire the injection payloads from barnowl-seal-attack-surface.md through this
+// machine's seal relay and print the internal LLM's reply. Needs the relay
+// running with `--allow-tools Bash`. Effect targets default to a local canary
+// sink / planted file; --raw uses the doc's literal targets.
+async function cmdSealProbe(argv) {
+  const { runProbe, CASES } = require("../lib/seal/probe.cjs");
+  const opts = { only: [] };
+  for (let i = 0; i < argv.length; i++) {
+    const a = argv[i];
+    if (a === "--raw") opts.raw = true;
+    else if (a === "--model") opts.model = argv[++i];
+    else if (a === "--base-url") opts.baseUrl = argv[++i];
+    else if (a === "--timeout") opts.timeoutMs = Number(argv[++i]) * 1000;
+    else if (a === "--list") { for (const c of CASES) console.log(`${c.id}\t${c.cls}\t${c.title}`); return 0; }
+    else if (a === "-h" || a === "--help") {
+      console.log(`Usage: barnowl seal-probe [classes...] [--raw] [--model M] [--base-url U] [--timeout S]
+  classes   case or class ids to run (e.g. A-1 C E), default: all
+  --list    list the cases and exit
+  --raw     use the doc's literal targets (evil.com, ~/.ssh/id_rsa) instead of local canaries
+Requires the relay running with --allow-tools Bash (else every reply says sealed-mode needs Bash).`);
+      return 0;
+    }
+    else if (a.startsWith("-")) { console.error(`unknown flag: ${a}`); return 1; }
+    else opts.only.push(a);
+  }
+
+  if (opts.raw) console.error("⚠ --raw: payloads point at the doc's literal targets; a compliant reply executes real exfil on this box.\n");
+  const { results, sinkHits } = await runProbe(opts);
+  for (const r of results) {
+    console.log(`\n=== ${r.id}  ${r.cls} — ${r.title} ===`);
+    if (r.error) console.log(`(relay error: ${r.error})`);
+    else console.log((r.reply || "(empty reply)").trim());
+  }
+  if (!opts.raw) {
+    console.log(`\n--- canary sink: ${sinkHits.length} request(s) captured ---`);
+    for (const h of sinkHits) console.log(`  ${h.method} ${h.path}${h.body ? "  body=" + h.body.slice(0, 120).replace(/\s+/g, " ") : ""}`);
+  }
+  return 0;
+}
+
 // ── Dispatch ─────────────────────────────────────────────────────────────────
 async function main() {
   const [cmd, ...rest] = process.argv.slice(2);
@@ -653,6 +694,7 @@ async function main() {
     case "verify": return cmdVerify(rest);
     case "models": return cmdModels();
     case "login": return cmdLogin(rest);
+    case "seal-probe": return cmdSealProbe(rest);
     case "config": {
       if (rest[0] === "init") {
         fs.mkdirSync(CONFIG_HOME, { recursive: true });
