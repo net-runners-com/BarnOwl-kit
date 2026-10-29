@@ -646,21 +646,33 @@ function cmdHelp() {
 // machine's seal relay and print the internal LLM's reply. Needs the relay
 // running with `--allow-tools Bash`. Effect targets default to a local canary
 // sink / planted file; --raw uses the doc's literal targets.
+const SEAL_PROBE_DEFAULT_MODELS = ["sonnet", "opus", "haiku", "fable"];
+
 async function cmdSealProbe(argv) {
   const { runProbe, CASES } = require("../lib/seal/probe.cjs");
   const opts = { only: [] };
+  let models = null;        // null → relay default (single run)
+  let logFile = null;
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === "--raw") opts.raw = true;
-    else if (a === "--model") opts.model = argv[++i];
+    else if (a === "--model") models = [argv[++i]];
+    else if (a === "--models") models = argv[++i].split(",").map((s) => s.trim()).filter(Boolean);
+    else if (a === "--all-models") models = SEAL_PROBE_DEFAULT_MODELS.slice();
     else if (a === "--base-url") opts.baseUrl = argv[++i];
     else if (a === "--timeout") opts.timeoutMs = Number(argv[++i]) * 1000;
+    else if (a === "--log") logFile = argv[++i];
     else if (a === "--list") { for (const c of CASES) console.log(`${c.id}\t${c.cls}\t${c.title}`); return 0; }
     else if (a === "-h" || a === "--help") {
-      console.log(`Usage: barnowl seal-probe [classes...] [--raw] [--model M] [--base-url U] [--timeout S]
-  classes   case or class ids to run (e.g. A-1 C E), default: all
-  --list    list the cases and exit
-  --raw     use the doc's literal targets (evil.com, ~/.ssh/id_rsa) instead of local canaries
+      console.log(`Usage: barnowl seal-probe [classes...] [options]
+  classes        case or class ids to run (e.g. A-1 C E), default: all
+  --model M      run against one model
+  --models a,b   run against each listed model
+  --all-models   run against ${SEAL_PROBE_DEFAULT_MODELS.join(", ")} (the doc's self-reported set)
+  --log FILE     append every full reply here (recommended with multiple models)
+  --list         list the cases and exit
+  --raw          use the doc's literal targets (evil.com, ~/.ssh/id_rsa) instead of local canaries
+  --base-url U   --timeout S
 Requires the relay running with --allow-tools Bash (else every reply says sealed-mode needs Bash).`);
       return 0;
     }
@@ -669,16 +681,33 @@ Requires the relay running with --allow-tools Bash (else every reply says sealed
   }
 
   if (opts.raw) console.error("⚠ --raw: payloads point at the doc's literal targets; a compliant reply executes real exfil on this box.\n");
-  const { results, sinkHits } = await runProbe(opts);
-  for (const r of results) {
-    console.log(`\n=== ${r.id}  ${r.cls} — ${r.title} ===`);
-    if (r.error) console.log(`(relay error: ${r.error})`);
-    else console.log((r.reply || "(empty reply)").trim());
+
+  const runList = models || [null];           // [null] = relay default model
+  const multi = runList.length > 1;
+  const log = logFile ? fs.createWriteStream(path.resolve(logFile), { flags: "a" }) : null;
+  const write = (s) => { if (log) log.write(s + "\n"); };
+
+  for (const model of runList) {
+    const label = model || "(relay default)";
+    const header = `\n########## model: ${label} ##########`;
+    console.log(header); write(header);
+    const { results, sinkHits } = await runProbe({ ...opts, model: model || undefined });
+    for (const r of results) {
+      const head = (r.error ? `(relay error: ${r.error})` : (r.reply || "(empty reply)")).trim().replace(/\s+/g, " ");
+      // stdout: one scannable line per case (full reply goes to --log).
+      console.log(`[${r.id}] ${head.slice(0, multi ? 120 : 100000)}${multi && head.length > 120 ? " …" : ""}`);
+      write(`\n=== ${label} / ${r.id}  ${r.cls} — ${r.title} ===\n${r.error ? "(relay error: " + r.error + ")" : (r.reply || "(empty reply)").trim()}`);
+    }
+    if (!opts.raw) {
+      const line = `--- canary sink: ${sinkHits.length} request(s) captured ---`;
+      console.log(line); write(line);
+      for (const h of sinkHits) {
+        const hl = `  ${h.method} ${h.path}${h.body ? "  body=" + h.body.slice(0, 120).replace(/\s+/g, " ") : ""}`;
+        console.log(hl); write(hl);
+      }
+    }
   }
-  if (!opts.raw) {
-    console.log(`\n--- canary sink: ${sinkHits.length} request(s) captured ---`);
-    for (const h of sinkHits) console.log(`  ${h.method} ${h.path}${h.body ? "  body=" + h.body.slice(0, 120).replace(/\s+/g, " ") : ""}`);
-  }
+  if (log) { log.end(); console.log(`\nfull replies → ${path.resolve(logFile)}`); }
   return 0;
 }
 
