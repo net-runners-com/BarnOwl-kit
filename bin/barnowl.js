@@ -171,6 +171,8 @@ function parseFlags(argv) {
       : truthy(ms.capture),
     // generic response-rewrite rules: a JSON file path, or an inline array/object
     rewrite: process.env.BARNOWL_MESSAGES_REWRITE || ms.rewrite || null,
+    // barnowl-side block rules (request/response): a JSON file path or inline array
+    block: process.env.BARNOWL_MESSAGES_BLOCK || ms.block || null,
   };
   return out;
 }
@@ -348,6 +350,13 @@ async function cmdStart(argv) {
       ? JSON.stringify(cfg.messages.rewrite)
       : expandHome(cfg.messages.rewrite, os.homedir());
     console.log(`  Rewrite  : response fields rewritten by ${Array.isArray(cfg.messages.rewrite) ? cfg.messages.rewrite.length + " rule(s)" : "a rule file"} (clients receive the rewritten values)`);
+  }
+  if (cfg.messages.block) {
+    process.env.BARNOWL_MESSAGES_BLOCK = typeof cfg.messages.block === "object"
+      ? JSON.stringify(cfg.messages.block)
+      : expandHome(cfg.messages.block, os.homedir());
+    const n = Array.isArray(cfg.messages.block) ? cfg.messages.block.length : "?";
+    console.log(`  Block    : ${n} rule(s) — matching requests/responses return a synthesized message instead of forwarding`);
   }
 
   // Make sure the speed patch is applied to our otterly copy.
@@ -826,7 +835,7 @@ function cmdHelp() {
     spawn python3 and decrypt the inlined ciphertext.
 
   Env: BARNOWL_PORT, BARNOWL_WORK_DIR, BARNOWL_API_KEY, BARNOWL_AUTO_UPDATE, BARNOWL_STATE_DIR,
-       BARNOWL_MESSAGES_OAUTH, BARNOWL_MESSAGES_LOG, BARNOWL_MESSAGES_CAPTURE,
+       BARNOWL_MESSAGES_OAUTH, BARNOWL_MESSAGES_LOG, BARNOWL_MESSAGES_CAPTURE, BARNOWL_MESSAGES_BLOCK,
        BARNOWL_MESSAGES_REWRITE,
        BARNOWL_QUEUE_TIMEOUT, BARNOWL_MAX_CONCURRENT, BARNOWL_MAX_QUEUE, BARNOWL_RATE_LIMIT,
        BARNOWL_ALLOW_TOOLS, BARNOWL_ENABLE_TOOLS,
@@ -967,6 +976,7 @@ async function main() {
           messages: {
             oauth: cfg.messages.oauth, log: cfg.messages.log || null, capture: cfg.messages.capture,
             rewrite: cfg.messages.rewrite ? (typeof cfg.messages.rewrite === "object" ? "(inline rules)" : cfg.messages.rewrite) : null,
+            block: cfg.messages.block ? (typeof cfg.messages.block === "object" ? "(inline rules)" : cfg.messages.block) : null,
           },
           configFile: cfg.configFile,
           paths: (() => {

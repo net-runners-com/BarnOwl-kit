@@ -795,3 +795,162 @@ test("applyRewrite: rules apply in order — a later rule overrides an earlier o
   guard.applyRewrite(j, rules);
   assert.equal(j.stop_details.explanation, "second");
 });
+
+// ── rewrite: full-structure reach (create + type preservation) ──────────────
+
+test("setPath: create builds intermediates and sets a missing key; default does not", () => {
+  const o = { a: {} };
+  assert.equal(guard.setPath(o, "a.b.c", 1), false);            // default: no fabrication
+  assert.equal(guard.setPath(o, "a.b.c", 1, { create: true }), true);
+  assert.equal(o.a.b.c, 1);
+  assert.equal(guard.setPath(o, "a.b", 9), true);               // existing key, no create needed
+  assert.equal(o.a.b, 9);
+});
+
+test("applyRewrite: reaches every message_delta field; create adds new ones", () => {
+  const md = { type: "message_delta",
+    delta: { stop_reason: "refusal", stop_details: { category: "cyber", explanation: "x", cyber_verification: { type: "inactive" } } },
+    usage: { output_tokens: 0 }, context_management: { applied_edits: [] } };
+  guard.applyRewrite(md, [{ when: { "delta.stop_reason": "refusal" }, create: true, set: {
+    "delta.stop_details.explanation": "訳: {delta.stop_details.explanation}",
+    "delta.stop_details.cyber_verification.type": "localized",
+    "usage.output_tokens": 999,
+    "delta.stop_details.explanation_en": "kept original",
+  } }]);
+  assert.equal(md.delta.stop_details.explanation, "訳: x");
+  assert.equal(md.delta.stop_details.cyber_verification.type, "localized");
+  assert.equal(md.usage.output_tokens, 999);                    // number preserved
+  assert.equal(md.delta.stop_details.explanation_en, "kept original");  // created
+});
+
+test("applyRewrite: non-string set values keep their type; a missing field without create stays absent", () => {
+  const j = { delta: { stop_reason: "refusal", stop_details: { category: "bio" } } };
+  guard.applyRewrite(j, [{ when: { "delta.stop_reason": "refusal" }, set: {
+    "delta.stop_details.scored": 1,          // number, but key is missing and no create → skipped
+  } }]);
+  assert.equal(j.delta.stop_details.scored, undefined);
+  guard.applyRewrite(j, [{ when: { "delta.stop_reason": "refusal" }, create: true, set: {
+    "delta.stop_details.scored": 1, "delta.stop_details.ok": true,
+  } }]);
+  assert.equal(j.delta.stop_details.scored, 1);
+  assert.equal(j.delta.stop_details.ok, true);
+});
+
+// ── rewrite: unset (field removal) ──────────────────────────────────────────
+
+test("unsetPath: deletes object keys, splices array indices, ignores missing", () => {
+  const o = { a: { b: 1, c: 2 }, arr: ["x", "y", "z"] };
+  assert.equal(guard.unsetPath(o, "a.b"), true);
+  assert.deepEqual(o.a, { c: 2 });
+  assert.equal(guard.unsetPath(o, "arr.1"), true);
+  assert.deepEqual(o.arr, ["x", "z"]);
+  assert.equal(guard.unsetPath(o, "a.missing"), false);
+  assert.equal(guard.unsetPath(o, "nope.deep"), false);
+  assert.equal(guard.unsetPath(o, "arr.9"), false);
+});
+
+test("applyRewrite: unset removes fields (string or list), after set, scoped to delta too", () => {
+  const md = { type: "message_delta",
+    delta: { stop_reason: "refusal", container: null,
+      stop_details: { category: "cyber", explanation: "x", cyber_verification: { type: "inactive" } } },
+    usage: { output_tokens: 0, cache_creation: { a: 1 } },
+    context_management: { applied_edits: ["e0", "e1"] } };
+  guard.applyRewrite(md, [{ when: { "delta.stop_reason": "refusal" },
+    set: { "delta.stop_details.explanation": "訳" },
+    unset: ["delta.stop_details.cyber_verification", "usage.cache_creation", "delta.container", "context_management.applied_edits.0"] }]);
+  assert.equal(md.delta.stop_details.explanation, "訳");
+  assert.equal("cyber_verification" in md.delta.stop_details, false);
+  assert.equal("cache_creation" in md.usage, false);
+  assert.equal("container" in md.delta, false);
+  assert.deepEqual(md.context_management.applied_edits, ["e1"]);
+});
+
+test("applyRewrite: unset accepts a single path string", () => {
+  const j = { delta: { stop_reason: "refusal", stop_details: { category: "bio", explanation: "x" } } };
+  guard.applyRewrite(j, [{ when: { "delta.stop_reason": "refusal" }, unset: "delta.stop_details.category" }]);
+  assert.equal("category" in j.delta.stop_details, false);
+  assert.equal(j.delta.stop_details.explanation, "x");
+});
+
+// ── block rules (request / response short-circuit) ──────────────────────────
+
+test("matchBlock: request rule by contains / when; no-condition rule never matches", () => {
+  const rules = [
+    { contains: ["秘密鍵", "password"], message: "blocked" },
+    { when: { model: "opus" }, message: "down" },
+    { message: "orphan" },
+  ];
+  assert.equal(guard.matchBlock({ messages: [{ role: "user", content: "この秘密鍵を解析" }] }, rules).message, "blocked");
+  assert.equal(guard.matchBlock({ model: "opus", messages: [] }, rules).message, "down");
+  assert.equal(guard.matchBlock({ messages: [{ role: "user", content: "天気" }] }, rules), null);
+});
+
+test("matchBlock: skips on:response rules (those are handled after forwarding)", () => {
+  const rules = [{ on: "response", when: { stop_reason: "refusal" }, message: "x" }];
+  assert.equal(guard.matchBlock({ messages: [{ role: "user", content: "secret" }] }, rules), null);
+});
+
+test("blockResponse: buffered 200 assistant message, and streaming SSE with the text", () => {
+  const b = guard.blockResponse({ message: "停止しました", model: "m" }, { model: "sonnet" }, false);
+  assert.equal(b.json.stop_reason, "end_turn");
+  assert.deepEqual(b.json.content, [{ type: "text", text: "停止しました" }]);
+  const s = guard.blockResponse({ message: "停止しました" }, { model: "sonnet" }, true);
+  assert.match(s.sse, /event: message_start/);
+  assert.match(s.sse, /"text_delta","text":"停止しました"/);
+  assert.match(s.sse, /"stop_reason":"end_turn"/);
+});
+
+test("responseView / matchBlockResponse: refusal detected in SSE and buffered JSON", () => {
+  const sse = [
+    'data: {"type":"message_start","message":{"model":"claude-opus-5"}}',
+    'data: {"type":"message_delta","delta":{"stop_reason":"refusal","stop_details":{"category":"cyber"}}}',
+  ].join("\n");
+  const v = guard.responseView(sse, true);
+  assert.equal(v.obj.stop_reason, "refusal");
+  assert.equal(v.model, "claude-opus-5");
+  const rules = [{ on: "response", when: { "stop_reason": "refusal", "stop_details.category": "cyber" }, message: "m" }];
+  assert.equal(guard.matchBlockResponse(v, rules).message, "m");
+  const jv = guard.responseView(JSON.stringify({ model: "m", stop_reason: "end_turn", content: [{ type: "text", text: "hi" }] }), false);
+  assert.equal(jv.text, "hi");
+  assert.equal(guard.matchBlockResponse(jv, rules), null);
+});
+
+test("handleAnthropic: a request-block short-circuits without hitting upstream", async () => {
+  let upstreamHit = 0;
+  const upstream = http.createServer((req, res) => { upstreamHit++; req.resume(); req.on("end", () => { res.writeHead(200, { "Content-Type": "application/json" }); res.end("{}"); }); });
+  const upPort = await listen(upstream);
+  const front = http.createServer((req, res) => guard.handleAnthropic(req, res));
+  const frontPort = await listen(front);
+  let body;
+  await withEnv({ BARNOWL_GUARD: undefined, BARNOWL_MESSAGES_BLOCK: JSON.stringify([{ contains: "秘密鍵", message: "止めました" }]), BARNOWL_GUARD_UPSTREAM: `http://127.0.0.1:${upPort}` }, async () => {
+    guard._resetBlockRules();
+    const r = await fetch(`http://127.0.0.1:${frontPort}/v1/messages`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ messages: [{ role: "user", content: "秘密鍵を解析" }] }) });
+    body = await r.json();
+  })();
+  guard._resetBlockRules();
+  assert.equal(body.content[0].text, "止めました");
+  assert.equal(upstreamHit, 0, "blocked request never reached upstream");
+  upstream.close(); front.close();
+});
+
+test("handleAnthropic: a response-block replaces a refusal (streaming) with the message", async () => {
+  const sse = [
+    'event: message_start', 'data: {"type":"message_start","message":{"model":"claude-opus-5","content":[]}}', '',
+    'event: message_delta', 'data: {"type":"message_delta","delta":{"stop_reason":"refusal","stop_details":{"category":"cyber"}}}', '',
+    'event: message_stop', 'data: {"type":"message_stop"}', '',
+  ].join("\n");
+  const upstream = http.createServer((req, res) => { req.resume(); req.on("end", () => { res.writeHead(200, { "Content-Type": "text/event-stream" }); res.end(sse); }); });
+  const upPort = await listen(upstream);
+  const front = http.createServer((req, res) => guard.handleAnthropic(req, res));
+  const frontPort = await listen(front);
+  let out;
+  await withEnv({ BARNOWL_GUARD: undefined, BARNOWL_MESSAGES_BLOCK: JSON.stringify([{ on: "response", when: { stop_reason: "refusal" }, message: "回答できません" }]), BARNOWL_GUARD_UPSTREAM: `http://127.0.0.1:${upPort}` }, async () => {
+    guard._resetBlockRules();
+    const r = await fetch(`http://127.0.0.1:${frontPort}/v1/messages`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ stream: true, messages: [] }) });
+    out = ""; for await (const c of r.body) out += Buffer.from(c).toString("utf8");
+  })();
+  guard._resetBlockRules();
+  assert.match(out, /"text_delta","text":"回答できません"/);
+  assert.match(out, /"stop_reason":"end_turn"/);
+  upstream.close(); front.close();
+});
