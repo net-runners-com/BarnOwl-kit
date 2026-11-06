@@ -121,12 +121,17 @@ test("readClaudeCredential: env token wins without touching the keychain", () =>
     env: { CLAUDE_CODE_OAUTH_TOKEN: "sk-env" }, platform: "darwin", account: "alice",
     keychain: () => { asked = true; return null; },
   });
-  assert.deepEqual(cred, { token: "sk-env", expiresAt: null, source: "env" });
+  assert.deepEqual(cred, {
+    token: "sk-env", expiresAt: null, source: "env",
+    refreshToken: null, refreshTokenExpiresAt: null, scopes: null, store: null,
+  });
   assert.equal(asked, false);
 });
 
 test("readClaudeCredential: keychain entry for the OS user, then the file fallback", () => {
-  const blob = (token) => JSON.stringify({ claudeAiOauth: { accessToken: token, expiresAt: 123 } });
+  const blob = (token) => JSON.stringify({
+    claudeAiOauth: { accessToken: token, expiresAt: 123, refreshToken: "rt", scopes: ["user:inference"] },
+  });
   let account;
   const fromKeychain = mc.readClaudeCredential({
     env: {}, platform: "darwin", account: "alice", home: "/h",
@@ -134,7 +139,11 @@ test("readClaudeCredential: keychain entry for the OS user, then the file fallba
     readFile: () => { throw new Error("not used"); },
   });
   assert.equal(account, "alice");
-  assert.deepEqual(fromKeychain, { token: "kc", expiresAt: 123, source: "keychain" });
+  assert.deepEqual(fromKeychain, {
+    token: "kc", expiresAt: 123, source: "keychain",
+    refreshToken: "rt", refreshTokenExpiresAt: null, scopes: ["user:inference"],
+    store: { kind: "keychain", account: "alice" },
+  });
 
   let read;
   const fromFile = mc.readClaudeCredential({
@@ -144,6 +153,7 @@ test("readClaudeCredential: keychain entry for the OS user, then the file fallba
   });
   assert.equal(read, path.join("/h", ".claude", ".credentials.json"));
   assert.equal(fromFile.source, "file");
+  assert.deepEqual(fromFile.store, { kind: "file", path: path.join("/h", ".claude", ".credentials.json") });
 
   assert.equal(mc.readClaudeCredential({
     env: {}, platform: "darwin", account: "alice", home: "/h",

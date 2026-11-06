@@ -25,6 +25,20 @@ test("ensurePatched applies everything and is idempotent", () => {
   assert.equal(ensurePatched(), "already");
 });
 
+test("server/index.js: the anthropic passthrough runs before the GET routes", () => {
+  const src = read("server/index.js");
+  const proxy = src.indexOf("barnowl: anthropic passthrough (every method)");
+  const firstGet = src.indexOf('if (req.method === "GET" && path === "/api/status")');
+  const postPipeline = src.indexOf('if (req.method !== "POST") {');
+  assert.ok(proxy > 0, "the passthrough block is patched in");
+  assert.ok(proxy < firstGet, "it must see GET /v1/files before otterly's GET router");
+  assert.ok(proxy < postPipeline);
+  assert.ok(src.includes("__barnowlGuard.isAnthropicPath(path)"));
+  assert.ok(src.includes("__barnowlGuard.handleAnthropic(req, res)"));
+  // the POST-only predecessor is retired, not left to double-handle
+  assert.ok(!src.includes('path === "/v1/messages" && __barnowlGuard'));
+});
+
 test("routes-openai: sonnet fallback, breaker code, typed stream errors", () => {
   const src = read("server/routes-openai.js");
   assert.ok(src.includes('let model = body.model || "sonnet";'));

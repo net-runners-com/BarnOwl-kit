@@ -485,7 +485,7 @@ own traffic can be inspected too:
 
 ```
 Claude Code ── ANTHROPIC_BASE_URL=http://localhost:11435 ──► barnowl
-  ├ /v1/messages (new)        guard → forwarded verbatim to api.anthropic.com
+  ├ /v1/messages, /v1/files … guard → forwarded verbatim to api.anthropic.com
   └ /v1/chat/completions etc. guard → the usual local claude / codex engines
 ```
 
@@ -537,9 +537,15 @@ Details:
 - `/v1/messages` forwards the **client's own** auth headers
   (`Authorization` / `x-api-key` / `anthropic-*`); barnowl holds no key and
   does not apply its own Bearer auth to that route. Verified with API-key
-  auth; subscription (OAuth) clients are untested.
-- With the guard disabled, `/v1/messages` still exists but forwards
+  auth. To use the local Claude Code login instead, see **Messages API on the
+  subscription** below.
+- With the guard disabled, the anthropic routes still exist but forward
   unmasked, and the engine routes behave exactly as before.
+- The guard can only mask **Messages-shaped** bodies (`/v1/messages`,
+  `/v1/messages/count_tokens`, `/v1/messages/batches` — every request in the
+  batch). With the guard ON, any other proxied body is blocked with
+  `403 guard_blocked` rather than forwarded unmasked: an agent config, a skill,
+  a multipart file upload. Bodyless methods (GET, DELETE) pass.
 
 Claude Code client setup:
 
@@ -547,6 +553,216 @@ Claude Code client setup:
 export ANTHROPIC_BASE_URL=http://localhost:11435
 claude
 ```
+
+## The rest of the Anthropic API (passthrough)
+
+The same passthrough carries the whole first-party surface, every method, so an
+Anthropic SDK pointed at barnowl can reach more than chat:
+
+```
+/v1/messages            /v1/files        /v1/agents        /v1/vaults
+/v1/messages/batches    /v1/skills       /v1/sessions      /v1/memory_stores
+/v1/messages/count_tokens                /v1/environments  /v1/deployments
+/v1/organizations                                          /v1/deployment_runs
+```
+
+Paths outside that list stay local: `/v1/models` and `/api/tags` answer from
+barnowl's own catalog, and `/v1/chat/completions`, `/v1/images/generations` and
+the Ollama routes run the local claude / codex engines. Queries and sub-paths
+are preserved, so `GET /v1/messages/batches/{id}/results` and SSE session
+streams work.
+
+With a real API key this is just a reverse proxy. On the subscription login
+(next section) most of it is **not** authorized — measured 2026-11-01:
+
+| Surface | Subscription login |
+| --- | --- |
+| `/v1/messages`, `/v1/messages/count_tokens` | works |
+| `/v1/files` | works (`user:file_upload` scope) |
+| `/v1/messages/batches` | `403 permission_error` — needs `user:batch` / `user:developer` / `workspace:developer` / `workspace:inference` |
+| `/v1/agents`, `/v1/sessions` (Managed Agents) | `403 permission_error` — "OAuth token lacks a scope this endpoint accepts" |
+
+Those 403s come from Anthropic, not barnowl: the Claude Code login is issued
+with `user:inference`, `user:profile`, `user:file_upload`, `user:mcp_servers`,
+`user:plugins`, `user:sessions:claude_code` and nothing else, so Batches and
+Managed Agents need an API key. barnowl forwards them either way.
+
+## Messages API on the subscription (`messages.oauth`)
+
+`POST /v1/messages` normally forwards the client's own credentials. With
+
+```json
+{ "messages": { "oauth": true } }
+```
+
+barnowl instead authenticates upstream with the **local Claude Code login** —
+the same keychain / `.credentials.json` entry the CLI engines use. Clients need
+no Anthropic API key, so the Messages API (and its server tools) runs on your
+subscription instead of per-token API billing.
+
+What barnowl changes on the way out:
+
+- drops the client's `Authorization` / `x-api-key` and sets
+  `Authorization: Bearer <local OAuth token>`
+- merges `oauth-2025-04-20` into `anthropic-beta` (the client's own betas are
+  kept) and defaults `anthropic-version` to `2023-06-01`
+- prepends the Claude Code identity block to `system` — on `/v1/messages`,
+  `/v1/messages/count_tokens`, and every request inside a
+  `/v1/messages/batches` body — keeping the client's own system prompt right
+  after it. **Required**: the login is only authorized for
+  Claude Code traffic, and a request whose first system block is anything else
+  comes back as `{"type":"error","error":{"type":"rate_limit_error","message":"Error"}}`
+  — measured, not documented.
+- refreshes the token itself when the stored one is spent (or within 2 minutes
+  of expiry), using the refresh token next to it in the store — the same
+  `POST https://platform.claude.com/v1/oauth/token` grant the CLI makes, with
+  the CLI's client id. Concurrent requests share one refresh.
+- writes the refreshed token back into the store it came from, merged into the
+  existing blob so `subscriptionType` / `rateLimitTier` survive. This is not
+  optional: the server **rotates** the refresh token (measured), so a rotation
+  left unwritten would leave Claude Code holding a dead one. The flip side is a
+  race if Claude Code writes the same item at the same moment — last writer
+  wins, and the loser's token is simply refreshed again on next use.
+- answers `401` only when nothing is left to refresh with: no login at all, no
+  refresh token (a bare `CLAUDE_CODE_OAUTH_TOKEN`), or an expired refresh
+  token. Then run `claude` and log in again.
+
+Measured lifetimes on a Max login: access token ~8 h, refresh token ~7 days
+(`refreshTokenExpiresAt` in the store), so an idle barnowl stays usable for
+about a week without the CLI being run.
+
+```bash
+curl http://localhost:11435/v1/messages \
+  -H "content-type: application/json" \
+  -d '{"model":"claude-sonnet-5-5","max_tokens":1024,
+       "tools":[{"type":"web_search_20250305","name":"web_search","max_uses":1}],
+       "messages":[{"role":"user","content":"Search the web for today's news"}]}'
+```
+
+Server tools, measured against a Claude Max login on 2026-11-01
+(`claude-sonnet-5-5`):
+
+| Tool | Result |
+| --- | --- |
+| `web_search_20250305` | works — `server_tool_use.web_search_requests: 1` |
+| `web_fetch_20250910` | works — returns a `web_fetch_result` document |
+| `code_execution_20260521` | **unavailable** — `bash_code_execution_tool_result_error` / `too_many_requests`, 3/3 over 40s |
+| `web_search_20260209`, `web_fetch_20260209` | **unavailable** — they run code execution under the hood, so they hit the same error |
+
+So the dynamic-filtering variants and anything sandbox-backed need a real API
+key; plain web search / fetch work on the subscription. Whether this use of a
+subscription login fits Anthropic's consumer terms is **your call** — barnowl
+only forwards it.
+
+With `oauth` off (the default) nothing changes: the route stays a verbatim
+passthrough of the client's own auth.
+
+Env: `BARNOWL_MESSAGES_OAUTH=1`
+
+### Credential snapshots
+
+Because the refresh token rotates, a bad write to the store would leave no way
+back to a working login. So every write-back first snapshots what it is about
+to overwrite, into `<state dir>/credentials-backup/` (dir `0700`, files
+`0600`, newest 5 kept):
+
+```bash
+barnowl creds list              # the live store + every snapshot (no secrets)
+barnowl creds backup            # snapshot the store right now
+barnowl creds restore [file]    # put one back (newest if no file given)
+```
+
+`restore` snapshots the live store before overwriting it, so it is reversible
+too. A restored *access* token is usually expired already — what matters is the
+refresh token inside it, which barnowl exchanges on the next request.
+
+### Wire logging, capture, and rewrite
+
+The `/v1/messages` passthrough has three optional, independent switches under
+the config `messages` block:
+
+```json
+{
+  "messages": {
+    "log": "~/barnowl-messages.log",
+    "capture": true,
+    "rewrite": "~/barnowl-rewrite.json"
+  }
+}
+```
+
+- **`log`** (env `BARNOWL_MESSAGES_LOG`) — tees each `/v1/messages` request and
+  the raw upstream response (SSE frames included, so the Anthropic
+  `message_start` / `content_block_delta` / `message_delta` / `message_stop`
+  events are visible) to a file. Bodies are **plaintext**; the `Authorization` /
+  `x-api-key` headers are redacted. Point it somewhere private. While logging is
+  on, barnowl also taps `stop_details` out of each response and appends a one
+  line summary (`--- stop: reason=... category=... ---`); a refusal is also
+  printed to barnowl's stdout with a Japanese gloss of the category.
+- **`capture`** (env `BARNOWL_MESSAGES_CAPTURE`) — points the spawned `claude`
+  CLI's `ANTHROPIC_BASE_URL` back at barnowl, so the OpenAI engine path
+  (`/v1/chat/completions`, seal included) routes its own Anthropic calls through
+  `/v1/messages` and lands in the log too. barnowl forwards to
+  `BARNOWL_GUARD_UPSTREAM` (real Anthropic), so there is no loop; it auto-enables
+  the log at `<state dir>/messages.log` if you did not set one.
+- **`rewrite`** (env `BARNOWL_MESSAGES_REWRITE`) — a JSON file path or inline
+  array of `{ "when": {<dot.path>: value | [values]}, "set": {<dot.path>:
+  "template"} }` rules, applied to every response object barnowl parses (SSE
+  events and buffered JSON; a rule also sees an event's `delta`, so one rule set
+  covers both shapes). `when` is AND over its paths; `set` templates interpolate
+  `{dot.path}` tokens from the object's pre-mutation values. A field is set only
+  when its parent already exists, so rules never fabricate structure, and rules
+  apply in order (later wins). It rewrites **any** field, not just refusals.
+
+  Localize a refusal (what a client that displays `stop_details.explanation`
+  then shows) — one rule per category, `{stop_details.explanation}` keeps the
+  English original:
+
+  ```json
+  [
+    { "when": { "stop_reason": "refusal", "stop_details.category": "cyber" },
+      "set":  { "stop_details.explanation": "サイバー被害につながりうる要求として拒否されました。（原文: {stop_details.explanation}）" } }
+  ]
+  ```
+
+  Whether the end client renders `explanation` is up to the client. Rewriting
+  `stop_details.type` / `category` can affect client logic and server-side
+  fallback routing — touch only `explanation` for a pure localization.
+
+## Open tracking (read receipts)
+
+Embed a 1x1 pixel in an HTML/email you send; when the recipient opens it, their
+viewer fetches `http://<host>/t/<id>.gif` from the running barnowl and the open
+is recorded locally in `<state dir>/beacons.json` — count, first/last time, and
+per-hit IP / User-Agent / Referer. barnowl sends nothing itself; the recipient's
+viewer is what calls in.
+
+```bash
+echo "<p>the body of your note" > body.html
+barnowl beacon make your-host:11435 "Subject" body.html --label tanaka -o memo.html
+#   → writes memo.html (your content + the inline pixel) and prints the id
+barnowl beacon list                 # the local tally (count, time, IP, client)
+barnowl beacon id tanaka            # just mint a unique id
+```
+
+The pixel route runs before auth so recipients can reach it; `GET /beacons`
+(the tally) is **loopback-only**. Reads are served from the running server
+(patched otterly) — `barnowl start` must be up and reachable at `<host>`.
+
+**What it can and can't tell you** — this is the same mechanism as an email
+open receipt, so treat it the same (tell recipients):
+
+- "who" is only an inference, and only if you mint a **unique id per recipient**
+  (`--label <name>`): then an open of that id ≈ that person (or whoever they
+  forwarded it to).
+- IP is not identity (NAT / VPN / mobile). Mail image proxies (e.g. Gmail)
+  **prefetch** the pixel on delivery → a provider IP and a false "open" before
+  the human looks. Tracker blockers suppress it entirely (count 0 ≠ unread).
+- Only HTML/email embeds reliably; plain `.txt` and bare images can't carry it,
+  and DOCX/PDF remote refs are usually blocked by the viewer.
+
+This counts opens of a file **you** send and own; it is not a way to run code on
+someone else's machine.
 
 ## Sealed chat (seal relay)
 
@@ -653,6 +869,9 @@ barnowl config         # show the effective config + which file was used
 - `apiKey` in the file sets `BARNOWL_API_KEY` (Bearer auth) on start.
 - `autoUpdate` — `false` stops `start` from fast-forwarding a git clone to
   `origin/main`.
+- `messages.oauth` — `true` makes `POST /v1/messages` authenticate with the
+  local Claude Code login instead of the client's key (see **Messages API on
+  the subscription**).
 - `allowTools` — same as the `--allow-tools` flag / `BARNOWL_ALLOW_TOOLS`
   env: space/comma list of native tools to subtract from the default
   kill-list (e.g. `"Bash"` for seal relay). Default is unset → all
@@ -685,6 +904,7 @@ barnowl config         # show the effective config + which file was used
 | `BARNOWL_GUARD_POLICY`    | (unset)   | policy dir; its `secret-guard.json` feeds the mask command |
 | `BARNOWL_GUARD_MASK_CMD`  | secret-guard | override mask command (stdin → stdout) |
 | `BARNOWL_GUARD_UPSTREAM`  | api.anthropic.com | Anthropic upstream for `/v1/messages` |
+| `BARNOWL_MESSAGES_OAUTH`  | (off)     | `1` authenticates `/v1/messages` with the local Claude Code login |
 
 State (PID + log) lives in `~/.barnowl/`.
 

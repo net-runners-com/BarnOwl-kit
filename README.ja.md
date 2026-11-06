@@ -473,7 +473,7 @@ claude.ai セッションの OAuth に紐づいており、サーバーが spawn
 
 ```
 Claude Code ── ANTHROPIC_BASE_URL=http://localhost:11435 ──► barnowl
-  ├ /v1/messages (新設)          ガード → api.anthropic.com へそのまま転送
+  ├ /v1/messages, /v1/files ほか ガード → api.anthropic.com へそのまま転送
   └ /v1/chat/completions など既存 ガード → 従来どおりローカルエンジンへ
 ```
 
@@ -490,7 +490,8 @@ Claude Code ── ANTHROPIC_BASE_URL=http://localhost:11435 ──► barnowl
 - `policy` ディレクトリの `secret-guard.json` が `SECRET_GUARD_CONFIG` として
   マスクコマンドに渡る
 - `/v1/messages` はクライアント自身の認証ヘッダをそのまま上流へ転送
-  （API キーで動作確認済み。サブスク OAuth は未検証）
+  （API キーで動作確認済み）。ローカルの Claude Code ログインで叩く場合は
+  後述の **サブスクで Messages API を叩く** を参照
 - `llm` — 任意の OpenAI 互換 LLM（Ollama / LM Studio / vLLM / LiteLLM など）に
   マスク後の残留 PII を判定させる二次チェック。leak 判定 → `403`。判定のみで
   書き換えはしない。マスクトークンは除去してから渡す（小型モデルの誤検出対策。
@@ -498,8 +499,216 @@ Claude Code ── ANTHROPIC_BASE_URL=http://localhost:11435 ──► barnowl
   再送された会話履歴は再チェックしない。リモート LLM を指すとそれ自体が送信に
   なるのでローカル推奨。チェッカー障害も fail-closed
 
+- ガードがマスクできるのは **Messages 形式のボディ** だけ（`/v1/messages`、
+  `/v1/messages/count_tokens`、`/v1/messages/batches` — バッチ内の各
+  リクエスト）。ガード ON の時、それ以外の転送対象ボディは
+  `403 guard_blocked` で拒否する（agent 設定、skill、multipart のファイル
+  アップロード等）。ボディの無いメソッド（GET / DELETE）は通す
+
 環境変数: `BARNOWL_GUARD` `BARNOWL_GUARD_POLICY` `BARNOWL_GUARD_MASK_CMD`
 `BARNOWL_GUARD_UPSTREAM`
+
+## Anthropic API の残り（パススルー）
+
+同じパススルーがファーストパーティ API 全面を全メソッドで中継するので、
+Anthropic SDK を barnowl に向けるとチャット以外も叩ける:
+
+```
+/v1/messages            /v1/files        /v1/agents        /v1/vaults
+/v1/messages/batches    /v1/skills       /v1/sessions      /v1/memory_stores
+/v1/messages/count_tokens                /v1/environments  /v1/deployments
+/v1/organizations                                          /v1/deployment_runs
+```
+
+この一覧の外はローカル処理のまま: `/v1/models` と `/api/tags` は barnowl 自身の
+カタログ、`/v1/chat/completions` `/v1/images/generations` と Ollama 系は
+ローカルの claude / codex エンジン。クエリとサブパスは保持するので
+`GET /v1/messages/batches/{id}/results` や SSE のセッションストリームも通る。
+
+実 API キーを使うなら単なるリバースプロキシ。サブスクログイン（次節）では
+**大半が認可されていない** — 2026-11-01 実測:
+
+| エンドポイント | サブスクログイン |
+| --- | --- |
+| `/v1/messages`, `/v1/messages/count_tokens` | 動く |
+| `/v1/files` | 動く（`user:file_upload` スコープ） |
+| `/v1/messages/batches` | `403 permission_error` — `user:batch` / `user:developer` / `workspace:developer` / `workspace:inference` のいずれかが必要 |
+| `/v1/agents`, `/v1/sessions`（Managed Agents） | `403 permission_error` — "OAuth token lacks a scope this endpoint accepts" |
+
+この 403 は barnowl ではなく Anthropic が返している。Claude Code の
+ログインに付くスコープは `user:inference` `user:profile` `user:file_upload`
+`user:mcp_servers` `user:plugins` `user:sessions:claude_code` だけなので、
+Batch API と Managed Agents は API キーが必要。barnowl はどちらでも転送する。
+
+## サブスクで Messages API を叩く（`messages.oauth`）
+
+`POST /v1/messages` は既定ではクライアントの認証情報をそのまま上流へ流します。
+
+```json
+{ "messages": { "oauth": true } }
+```
+
+を設定すると、barnowl が **ローカルの Claude Code ログイン**（CLI エンジンが
+使うのと同じ keychain / `.credentials.json`）で上流に認証します。クライアント
+側に Anthropic API キーは不要で、Messages API とそのサーバーツールが
+トークン課金ではなくサブスク枠で動きます。
+
+送信時に barnowl が書き換えるもの:
+
+- クライアントの `Authorization` / `x-api-key` を捨て、
+  `Authorization: Bearer <ローカル OAuth トークン>` を付ける
+- `anthropic-beta` に `oauth-2025-04-20` をマージ（クライアント指定の beta は
+  保持）。`anthropic-version` が無ければ `2023-06-01` を補う
+- `system` の先頭に Claude Code の identity ブロックを挿入し、クライアント自身の
+  system プロンプトはその直後に残す（`/v1/messages`、
+  `/v1/messages/count_tokens`、`/v1/messages/batches` の各リクエストが対象）。**必須**: このログインは Claude Code の
+  トラフィックにしか認可されておらず、先頭が別の system ブロックだと
+  `{"type":"error","error":{"type":"rate_limit_error","message":"Error"}}`
+  が返る（ドキュメント化されていない挙動。実測）
+- アクセストークンが切れていれば（期限の 2 分前から）barnowl 自身が更新する。
+  store に並んで入っている refresh token を使い、CLI と同じ
+  `POST https://platform.claude.com/v1/oauth/token`、CLI と同じ client id で
+  交換する。同時リクエストは 1 回の更新を共有する
+- 更新結果は元の store に書き戻す。既存の blob にマージするので
+  `subscriptionType` / `rateLimitTier` は保持される。これは任意ではない:
+  サーバーは refresh token を **ローテートする**（実測）ので、書き戻さないと
+  Claude Code 側が死んだ refresh token を持つことになる。代償として Claude
+  Code が同時に同じ項目を書くと競合する（後から書いた方が勝ち、負けた側は
+  次回利用時に再更新されるだけ）
+- `401` を返すのは更新材料が無い時だけ: ログイン自体が無い、refresh token が
+  無い（`CLAUDE_CODE_OAUTH_TOKEN` 直指定など）、refresh token も失効している。
+  その場合は `claude` で再ログインする
+
+実測の寿命（Max ログイン）: アクセストークン約 8 時間、refresh token 約 7 日
+（store の `refreshTokenExpiresAt`）。つまり barnowl を放置しても 1 週間程度は
+CLI を起動せずに使える。
+
+```bash
+curl http://localhost:11435/v1/messages \
+  -H "content-type: application/json" \
+  -d '{"model":"claude-sonnet-5-5","max_tokens":1024,
+       "tools":[{"type":"web_search_20250305","name":"web_search","max_uses":1}],
+       "messages":[{"role":"user","content":"今日のニュースを検索して"}]}'
+```
+
+サーバーツールの実測（2026-11-01、Claude Max ログイン、`claude-sonnet-5-5`）:
+
+| ツール | 結果 |
+| --- | --- |
+| `web_search_20250305` | 動く（`server_tool_use.web_search_requests: 1`） |
+| `web_fetch_20250910` | 動く（`web_fetch_result` ドキュメントが返る） |
+| `code_execution_20260521` | **使えない** — `bash_code_execution_tool_result_error` / `too_many_requests`、40 秒間に 3/3 で失敗 |
+| `web_search_20260209`, `web_fetch_20260209` | **使えない** — 内部で code execution を使うため同じエラー |
+
+つまり dynamic filtering 版とサンドボックス依存のツールは実 API キーが必要で、
+素の web search / fetch はサブスクで動きます。サブスクのログインをこの用途に
+使うことが Anthropic の規約に収まるかの判断は **利用者側**。barnowl は転送しか
+しません。
+
+`oauth` を切っている既定状態では挙動は変わりません（クライアント認証をそのまま
+流す素通し）。
+
+環境変数: `BARNOWL_MESSAGES_OAUTH=1`
+
+### 資格情報のスナップショット
+
+refresh token がローテートするので、store への書き込みを失敗すると復帰手段が
+無くなる。そこで書き戻しの前に必ず上書き対象をスナップショットする。保存先は
+`<state dir>/credentials-backup/`（ディレクトリ `0700`、ファイル `0600`、
+新しい 5 件を保持）:
+
+```bash
+barnowl creds list              # 現在の store と全スナップショット（秘密は出さない）
+barnowl creds backup            # 今の store をスナップショット
+barnowl creds restore [file]    # 書き戻す（ファイル省略で最新）
+```
+
+`restore` も上書き前に現状をスナップショットするので戻せる。復元した
+*アクセス* トークンは大抵もう失効しているが、重要なのは中の refresh token で、
+次のリクエストで barnowl が交換する。
+
+### wire ログ・capture・rewrite
+
+`/v1/messages` パススルーに、config `messages` ブロック配下の独立した3スイッチ:
+
+```json
+{
+  "messages": {
+    "log": "~/barnowl-messages.log",
+    "capture": true,
+    "rewrite": "~/barnowl-rewrite.json"
+  }
+}
+```
+
+- **`log`**（env `BARNOWL_MESSAGES_LOG`）— `/v1/messages` のリクエストと上流の
+  生レスポンス（SSE フレーム込み。Anthropic の `message_start` /
+  `content_block_delta` / `message_delta` / `message_stop` が見える）をファイルに
+  tee。ボディは**平文**、`Authorization` / `x-api-key` だけ伏せ字。private な
+  場所へ。ログ有効時は各レスポンスから `stop_details` を抜いて1行要約
+  （`--- stop: reason=... category=... ---`）を追記し、refusal は category の
+  日本語説明つきで stdout にも出す。
+- **`capture`**（env `BARNOWL_MESSAGES_CAPTURE`）— spawn する `claude` CLI の
+  `ANTHROPIC_BASE_URL` を barnowl 自身に向け、OpenAI エンジン経路
+  （`/v1/chat/completions`、seal 含む）の Anthropic 通信を `/v1/messages` 経由に
+  して上のログに乗せる。barnowl の転送先は `BARNOWL_GUARD_UPSTREAM`（実
+  Anthropic）なので周回しない。ログ未指定なら `<state dir>/messages.log` に自動
+  有効化。
+- **`rewrite`**（env `BARNOWL_MESSAGES_REWRITE`）— JSON ファイルパス、または
+  `{ "when": {<dot.path>: 値 | [値,...]}, "set": {<dot.path>: "テンプレート"} }`
+  ルールのインライン配列。barnowl がパースする全レスポンスオブジェクト（SSE
+  イベント・バッファ JSON。イベントの `delta` 配下も見るので両形式で同じパスが
+  効く）に適用。`when` はパスの AND、`set` のテンプレートは `{dot.path}` で発火前
+  の値を差し込む。親が既存の時だけ代入（構造は捏造しない）。複数ルールは順に
+  適用（後勝ち）。refusal 限定ではなく**任意フィールド**を書き換える。
+
+  refusal の日本語化（`stop_details.explanation` を表示するクライアントで見える）
+  — カテゴリごとに1ルール、`{stop_details.explanation}` で英語原文を保持:
+
+  ```json
+  [
+    { "when": { "stop_reason": "refusal", "stop_details.category": "cyber" },
+      "set":  { "stop_details.explanation": "サイバー被害につながりうる要求として拒否されました。（原文: {stop_details.explanation}）" } }
+  ]
+  ```
+
+  クライアントが `explanation` を実際に表示するかはクライアント依存。
+  `stop_details.type` / `category` を書き換えるとクライアントの分岐やサーバー
+  サイド fallback ルーティングに影響しうる。純粋な日本語化なら `explanation`
+  だけ触る。
+
+## 開封トラッキング（read receipts）
+
+送る HTML/メールに 1x1 ピクセルを仕込む。受信者が開くと、そのビューアが起動中の
+barnowl から `http://<host>/t/<id>.gif` を取得し、開封が `<state dir>/beacons.json`
+にローカル記録される（回数、初回/最終時刻、ヒットごとの IP / User-Agent / Referer）。
+barnowl 自身は何も送らない。呼びに来るのは受信者のビューア。
+
+```bash
+echo "<p>本文です" > body.html
+barnowl beacon make your-host:11435 "件名" body.html --label tanaka -o memo.html
+#   → memo.html（本文 + インラインピクセル）を書き出し、id を表示
+barnowl beacon list                 # ローカルの集計（回数・時刻・IP・クライアント）
+barnowl beacon id tanaka            # ユニーク id だけ発行
+```
+
+ピクセル経路は受信者が到達できるよう auth より前で動く。`GET /beacons`（集計）は
+**ループバック限定**。読み出しは起動中のサーバー（パッチ済み otterly）が返すので、
+`barnowl start` が `<host>` で到達可能である必要がある。
+
+**分かること・分からないこと** — メールの開封通知と同じ仕組みなので同じ扱いにする
+（受信者に伝える）:
+
+- 「誰が」は推定でしかなく、**受信者ごとにユニーク id**（`--label <名前>`）を振って
+  初めて「その id の開封 ≈ その人（または転送先）」と結びつく。
+- IP は身元ではない（NAT / VPN / モバイル）。メールの画像プロキシ（Gmail 等）は
+  配信時にピクセルを**先読み**する → プロバイダの IP と、本人が見る前の偽の「開封」。
+  トラッカー遮断で完全に抑止される（回数0 ≠ 未読）。
+- 確実に仕込めるのは HTML/メールのみ。素の `.txt` や画像単体は不可、DOCX/PDF の
+  外部参照はビューアがブロックすることが多い。
+
+これは**自分が送る自分のファイル**の開封を数えるもので、他人のマシンでコードを
+実行する手段ではない。
 
 ## 封印チャット（seal relay）
 
@@ -599,6 +808,9 @@ barnowl config         # 有効な設定と、どのファイルが使われた�
 - ファイル内の `apiKey` は起動時に `BARNOWL_API_KEY`（Bearer 認証）として設定されます。
 - `autoUpdate` — `false` にすると `start` 時の `origin/main` への
   fast-forward を行いません。
+- `messages.oauth` — `true` で `POST /v1/messages` がクライアントのキーでは
+  なくローカルの Claude Code ログインで認証します（**サブスクで Messages API
+  を叩く** 参照）。
 - `allowTools` — `--allow-tools` フラグ / `BARNOWL_ALLOW_TOOLS` 環境変数と
   同じ。デフォルトのキルリストから差し引く native tool 名をスペース/
   カンマ区切りで指定（例: seal relay 用の `"Bash"`）。未設定 →
@@ -627,6 +839,7 @@ barnowl config         # 有効な設定と、どのファイルが使われた�
 | `BARNOWL_CODEX_SANDBOX`   | `read-only` | チャット時の codex サンドボックス |
 | `BARNOWL_CODEX_TIMEOUT_MS`| `300000`  | Codex チャットのリクエスト kill |
 | `BARNOWL_IMAGE_TIMEOUT_MS`| `600000`  | 画像生成 1 枚あたりの kill      |
+| `BARNOWL_MESSAGES_OAUTH`  | （無効）  | `1` で `/v1/messages` をローカル Claude Code ログインで認証 |
 
 状態（PID とログ）は `~/.barnowl/` に置かれます。
 

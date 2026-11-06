@@ -18,6 +18,7 @@ const { ensurePatched } = require("../lib/patch-otterly.js");
 const { checkForUpdate } = require("../lib/self-update.js");
 const {
   PROVIDERS, HIDDEN, stateDir, refreshCatalog, readCatalog, summarize, claudeBin, codexBin,
+  readClaudeCredential,
 } = require("../lib/model-catalog.cjs");
 const { NAMES } = require("../lib/auth-errors.cjs");
 const { PATH_KEYS, applyPaths, detectPaths, expandHome } = require("../lib/paths.cjs");
@@ -155,6 +156,21 @@ function parseFlags(argv) {
       maxChars: process.env.BARNOWL_GUARD_LLM_MAXCHARS || gl.maxChars || null,
       prompt: process.env.BARNOWL_GUARD_LLM_PROMPT || gl.prompt || null,
     },
+  };
+  // "messages" block: the /v1/messages anthropic passthrough (it exists with
+  // or without the guard). oauth → authenticate upstream with the local Claude
+  // Code login instead of the client's own key.
+  const ms = f.messages && typeof f.messages === "object" ? f.messages : {};
+  out.messages = {
+    oauth: process.env.BARNOWL_MESSAGES_OAUTH !== undefined
+      ? truthy(process.env.BARNOWL_MESSAGES_OAUTH)
+      : truthy(ms.oauth),
+    log: process.env.BARNOWL_MESSAGES_LOG || ms.log || null,
+    capture: process.env.BARNOWL_MESSAGES_CAPTURE !== undefined
+      ? truthy(process.env.BARNOWL_MESSAGES_CAPTURE)
+      : truthy(ms.capture),
+    // generic response-rewrite rules: a JSON file path, or an inline array/object
+    rewrite: process.env.BARNOWL_MESSAGES_REWRITE || ms.rewrite || null,
   };
   return out;
 }
@@ -298,6 +314,42 @@ async function cmdStart(argv) {
     console.log(`  Anthropic: ${baseUrl(cfg.port)} (point ANTHROPIC_BASE_URL here for a guarded passthrough)`);
   }
 
+  // /v1/messages upstream auth: the local Claude Code login, not the client's.
+  if (cfg.messages.oauth) {
+    process.env.BARNOWL_MESSAGES_OAUTH = "1";
+    console.log(`  Messages : /v1/messages authenticates with the local Claude Code login (clients need no anthropic key)`);
+  }
+  if (cfg.messages.log) {
+    process.env.BARNOWL_MESSAGES_LOG = expandHome(cfg.messages.log, os.homedir());
+    console.log(`  Msg log  : /v1/messages request+response teed to ${process.env.BARNOWL_MESSAGES_LOG} (PLAINTEXT bodies; auth redacted)`);
+  }
+  // Engine-capture: point the spawned claude CLI's ANTHROPIC_BASE_URL back at
+  // barnowl, so the /v1/chat/completions engine path (seal included) routes its
+  // raw Anthropic calls through /v1/messages and lands in the wire log —
+  // message_delta, tool_use plaintext, stop_details and all. barnowl forwards
+  // to BARNOWL_GUARD_UPSTREAM (real Anthropic), so there is no loop.
+  let childAnthropicBase = null;
+  if (cfg.messages.capture) {
+    const self = baseUrl(cfg.port);
+    const upstream = (process.env.BARNOWL_GUARD_UPSTREAM || "https://api.anthropic.com").replace(/\/+$/, "");
+    if (upstream.includes(`:${cfg.port}`) || /localhost|127\.0\.0\.1/.test(upstream)) {
+      console.error(`  ERROR: messages.capture would loop — BARNOWL_GUARD_UPSTREAM (${upstream}) points back at barnowl. Set it to a real Anthropic endpoint.`);
+      return 1;
+    }
+    if (!process.env.BARNOWL_MESSAGES_LOG) {
+      process.env.BARNOWL_MESSAGES_LOG = path.join(STATE_DIR, "messages.log");
+      console.log(`  Msg log  : auto-enabled for capture → ${process.env.BARNOWL_MESSAGES_LOG} (PLAINTEXT bodies; auth redacted)`);
+    }
+    childAnthropicBase = self;
+    console.log(`  Capture  : engine → ANTHROPIC_BASE_URL=${self}; raw Anthropic traffic logged to ${process.env.BARNOWL_MESSAGES_LOG}`);
+  }
+  if (cfg.messages.rewrite) {
+    process.env.BARNOWL_MESSAGES_REWRITE = typeof cfg.messages.rewrite === "object"
+      ? JSON.stringify(cfg.messages.rewrite)
+      : expandHome(cfg.messages.rewrite, os.homedir());
+    console.log(`  Rewrite  : response fields rewritten by ${Array.isArray(cfg.messages.rewrite) ? cfg.messages.rewrite.length + " rule(s)" : "a rule file"} (clients receive the rewritten values)`);
+  }
+
   // Make sure the speed patch is applied to our otterly copy.
   try {
     if (ensurePatched() === "patched") {
@@ -353,11 +405,14 @@ async function cmdStart(argv) {
   ];
 
   const logFd = fs.openSync(LOG_FILE, "a");
+  const childEnv = childAnthropicBase
+    ? { ...process.env, ANTHROPIC_BASE_URL: childAnthropicBase }
+    : process.env;
   const child = spawn(process.execPath, args, {
     detached: true,
     windowsHide: true,
     stdio: ["ignore", logFd, logFd],
-    env: process.env,
+    env: childEnv,
   });
   child.unref();
   fs.writeFileSync(PID_FILE, String(child.pid));
@@ -518,6 +573,113 @@ async function cmdVerify(argv) {
   }
 }
 
+/** barnowl beacon make|list|id — open-tracking (read receipts) for files you
+ *  send. The pixel route lives in the running server (patched otterly); this
+ *  just mints ids, builds the self-contained HTML, and reads the local tally. */
+function cmdBeacon(argv) {
+  const beacon = require("../lib/beacon.cjs");
+  const sub = argv[0] || "list";
+  const flag = (name) => { const i = argv.indexOf(name); return i >= 0 ? argv[i + 1] : null; };
+  try {
+    if (sub === "id") {
+      console.log(beacon.mintId(argv[1] || ""));
+      return 0;
+    }
+    if (sub === "list") {
+      const data = beacon.load();
+      const ids = Object.keys(data);
+      if (!ids.length) { console.log(`No opens recorded yet (${beacon.storePath()}).`); return 0; }
+      console.log(`Open tallies (${beacon.storePath()}):`);
+      for (const id of ids) {
+        const e = data[id];
+        console.log(`  ${id}: ${e.reads} opens  first ${e.first}  last ${e.last}`);
+        const last = (e.hits || []).slice(-1)[0];
+        if (last) console.log(`      last hit: ${last.ip}  ${(last.ua || "").slice(0, 80)}`);
+      }
+      return 0;
+    }
+    if (sub === "make") {
+      const host = argv[1], title = argv[2], bodyFile = argv[3];
+      if (!host || !bodyFile) {
+        console.error("usage: barnowl beacon make <host:port> <title> <bodyFile> [--id X | --label name] [-o out.html]");
+        return 1;
+      }
+      const id = flag("--id") || beacon.mintId(flag("--label") || title || "");
+      const body = require("fs").readFileSync(bodyFile, "utf8");
+      const html = beacon.renderHtml({ id, host, title: title || "", body });
+      const out = flag("-o") || flag("--out");
+      if (out) { require("fs").writeFileSync(out, html); console.log(`wrote ${out}`); }
+      else process.stdout.write(html);
+      console.error(`beacon id=${id}  pixel=http://${host}/t/${id}.gif  (send a unique id per recipient to attribute opens)`);
+      return 0;
+    }
+    console.error(`Unknown: barnowl beacon ${sub} (expected make | list | id)`);
+    return 1;
+  } catch (e) {
+    console.error(`beacon ${sub} failed: ${e.message}`);
+    return 1;
+  }
+}
+
+/** barnowl creds [list|backup|restore [file]] — snapshots of the Claude Code
+ *  credential store. messages.oauth refreshes that store and the refresh token
+ *  rotates, so a snapshot is the way back if a write goes wrong. */
+function cmdCreds(argv) {
+  const oauth = require("../lib/claude-oauth.cjs");
+  const when = (ms) => (ms ? new Date(ms).toISOString().replace("T", " ").slice(0, 19) + "Z" : "(none)");
+  const sub = argv[0] || "list";
+
+  const show = () => {
+    const backups = oauth.listBackups();
+    console.log(`Snapshots in ${oauth.backupDir()}:`);
+    if (!backups.length) console.log("  (none yet — `barnowl creds backup` writes one)");
+    for (const b of backups) {
+      console.log(`  ${path.basename(b.file)}  token until ${when(b.expiresAt)}`
+        + `  refresh ${b.hasRefreshToken ? "until " + when(b.refreshTokenExpiresAt) : "(missing)"}`);
+    }
+  };
+
+  try {
+    if (sub === "list") {
+      const cred = readClaudeCredential();
+      if (!cred) console.log("Live store: no Claude Code login found");
+      else {
+        console.log(`Live store: ${cred.source}`
+          + `  token until ${when(cred.expiresAt)}`
+          + `  refresh ${cred.refreshToken ? "until " + when(cred.refreshTokenExpiresAt) : "(missing)"}`);
+      }
+      show();
+      return 0;
+    }
+    if (sub === "backup") {
+      const r = oauth.backupNow();
+      console.log(`Snapshot written: ${r.file}`);
+      return 0;
+    }
+    if (sub === "restore") {
+      let file = argv[1];
+      if (!file) {
+        const backups = oauth.listBackups();
+        if (!backups.length) {
+          console.error("No snapshot to restore. Run `barnowl creds backup` while the login works.");
+          return 1;
+        }
+        file = backups[backups.length - 1].file;
+      }
+      const r = oauth.restore(file);
+      console.log(`Restored ${file} into the ${r.store.kind} store`
+        + (r.previous ? ` (the previous contents went to ${r.previous})` : ""));
+      console.log("A restored access token may already be expired; the refresh token is what matters.");
+      return 0;
+    }
+    console.error(`Unknown: barnowl creds ${sub} (expected list | backup | restore [file])`);
+    return 1;
+  } catch (e) {
+    console.error(`creds ${sub} failed: ${e.message}`);
+    return 1;
+  }
+}
+
 function cmdModels() {
   const catalog = readCatalog();
   if (catalog) {
@@ -591,6 +753,8 @@ function cmdHelp() {
     barnowl verify                         End-to-end check + latency
     barnowl models                         Live model list (per login)
     barnowl login [claude|codex]           Re-login (revoked / expired), no restart
+    barnowl creds [list|backup|restore]    Snapshots of the Claude Code credential store
+    barnowl beacon make|list|id             Open-tracking (read receipts) for files you send
     barnowl config                         Show effective config + source
     barnowl config init [path]             Create a starter config file
     barnowl help | version
@@ -624,6 +788,36 @@ function cmdHelp() {
     secret-guard.json is used when present. "llm" adds a second stage: any
     OpenAI-compatible LLM judges the masked text; leak verdict → 403.
 
+  Anthropic API passthrough (config "messages" block):
+    { "messages": { "oauth": true } }
+    /v1/messages, /v1/messages/batches, /v1/files, /v1/skills, /v1/agents,
+    /v1/sessions and friends forward to api.anthropic.com (every method);
+    /v1/models, /v1/chat/completions and the Ollama routes stay local.
+    "log" tees each /v1/messages request+response (raw SSE incl. message_delta)
+    to a file — PLAINTEXT bodies, auth redacted; point it somewhere private.
+    "capture": true routes the engine's own Anthropic calls (/v1/chat/completions,
+    seal included) back through /v1/messages so their raw Anthropic SSE lands in
+    that log too (auto-enables the log at <state dir>/messages.log).
+    "rewrite" (a JSON file path, or an inline array) rewrites response fields
+    before the client sees them: a list of { "when": {<dot.path>: value|[values]},
+    "set": {<dot.path>: "template with {dot.path} tokens"} } rules applied to
+    every response object (SSE events and buffered JSON; a rule also sees an
+    event's delta). Rewrites any field, not just refusals; rules apply in order.
+    Changing stop_details type/category can affect client logic and fallback routing.
+    By default the client's
+    own key goes up; with "oauth" barnowl swaps in the local Claude Code login,
+    so an SDK with a dummy key can use the Messages API with no anthropic key.
+    Measured on that login: web_search_20250305 and web_fetch_20250910 work;
+    code_execution (and the _20260209 search/fetch variants, which use it)
+    answer too_many_requests. Subscription quota, not API billing.
+    barnowl refreshes the token when it expires (~8h) and writes the result
+    back to the keychain, because the refresh token rotates; it 401s only when
+    the refresh token itself is gone or expired (~7 days idle). Every write-back
+    snapshots the store first — see \`barnowl creds\`.
+    Measured: that login has no scope for /v1/messages/batches or the Managed
+    Agents endpoints (403 permission_error); those need a real API key. barnowl never refreshes the token:
+    once it expires the route 401s until \`claude\` runs again.
+
   Native tool opt-in (default: ALL disabled → fast chat path):
     --allow-tools "Bash"             enable just these for the spawned claude CLI
     BARNOWL_ALLOW_TOOLS="Bash,Read"   same, via env (comma or space separated)
@@ -632,6 +826,8 @@ function cmdHelp() {
     spawn python3 and decrypt the inlined ciphertext.
 
   Env: BARNOWL_PORT, BARNOWL_WORK_DIR, BARNOWL_API_KEY, BARNOWL_AUTO_UPDATE, BARNOWL_STATE_DIR,
+       BARNOWL_MESSAGES_OAUTH, BARNOWL_MESSAGES_LOG, BARNOWL_MESSAGES_CAPTURE,
+       BARNOWL_MESSAGES_REWRITE,
        BARNOWL_QUEUE_TIMEOUT, BARNOWL_MAX_CONCURRENT, BARNOWL_MAX_QUEUE, BARNOWL_RATE_LIMIT,
        BARNOWL_ALLOW_TOOLS, BARNOWL_ENABLE_TOOLS,
        BARNOWL_GUARD, BARNOWL_GUARD_POLICY, BARNOWL_GUARD_MASK_CMD, BARNOWL_GUARD_UPSTREAM,
@@ -723,6 +919,8 @@ async function main() {
     case "verify": return cmdVerify(rest);
     case "models": return cmdModels();
     case "login": return cmdLogin(rest);
+    case "creds": return cmdCreds(rest);
+    case "beacon": return cmdBeacon(rest);
     case "seal-probe": return cmdSealProbe(rest);
     case "config": {
       if (rest[0] === "init") {
@@ -766,6 +964,10 @@ async function main() {
                 llm: cfg.guard.llm.url ? { url: cfg.guard.llm.url, model: cfg.guard.llm.model || "qwen2.5:3b" } : null,
               }
             : { enabled: false },
+          messages: {
+            oauth: cfg.messages.oauth, log: cfg.messages.log || null, capture: cfg.messages.capture,
+            rewrite: cfg.messages.rewrite ? (typeof cfg.messages.rewrite === "object" ? "(inline rules)" : cfg.messages.rewrite) : null,
+          },
           configFile: cfg.configFile,
           paths: (() => {
             const detected = detectPaths();
