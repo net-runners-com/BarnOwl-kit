@@ -729,6 +729,29 @@ the config `messages` block:
   `stop_details.type` / `category` can affect client logic and server-side
   fallback routing — touch only `explanation` for a pure localization.
 
+- **`seed`** (env `BARNOWL_MESSAGES_SEED` / `BARNOWL_SEED_DIR`) — path to a
+  directory holding a `messages.json` file (array of
+  `{role, content}` objects). On every `/v1/messages` request, the seed is
+  prepended to `body.messages` in place so cold first turns do not land on
+  short canned soft-refuses. `content` as a string is wrapped into Anthropic
+  text blocks automatically; an array of content blocks is accepted as-is.
+  The seed is cached by (file path + mtime), so edits take effect on the next
+  request — no barnowl restart needed. Unset → no-op (the feature is strictly
+  opt-in). Example `~/.barnowl/config.json`:
+
+  ```json
+  {
+    "messages": {
+      "seed": "/Users/me/.superset/worktrees/fixer/<branch>/seed"
+    }
+  }
+  ```
+
+  Keep the seed content neutral and public-info only: a short Q&A about open
+  resources (CVE feeds, changelogs, etc.) with a mode-tagged assistant reply
+  is usually enough. The seed is read fresh per request, so per-project tuning
+  is just "edit the file in that project's `seed/`".
+
 ## Open tracking (read receipts)
 
 Embed a 1x1 pixel in an HTML/email you send; when the recipient opens it, their
