@@ -174,13 +174,27 @@ function parseFlags(argv) {
     // barnowl-side block rules (request/response): a JSON file path or inline array
     block: process.env.BARNOWL_MESSAGES_BLOCK || ms.block || null,
     // warm-up turns prepended to every /v1/messages request. A directory path
-    // holding `messages.json` (or `level-1.json`); see lib/seed-prepend.cjs.
+    // holding `messages.json` / `level-1.json` / `level-2.json` ...
+    // See lib/seed-prepend.cjs.
     seed: process.env.BARNOWL_MESSAGES_SEED || process.env.BARNOWL_SEED_DIR || ms.seed || null,
+    // Auto-recovery: when the upstream returns stop_reason=refusal, re-forward
+    // the request with the next seed level prepended, up to seedMaxRetry.
+    // Opt-in — off by default. Forces non-streaming while retrying.
+    seedRetryOnRefuse: process.env.BARNOWL_SEED_RETRY_ON_REFUSAL !== undefined
+      ? truthy(process.env.BARNOWL_SEED_RETRY_ON_REFUSAL)
+      : truthy(ms.seedRetryOnRefuse),
+    seedMaxRetry: process.env.BARNOWL_SEED_MAX_RETRY || ms.seedMaxRetry || null,
   };
   // Surface messages.seed to the otterly child process via env so guard.cjs's
   // seed-prepend module can see it without reaching back into barnowl's config.
   if (out.messages.seed && !process.env.BARNOWL_SEED_DIR) {
     process.env.BARNOWL_SEED_DIR = String(out.messages.seed);
+  }
+  if (out.messages.seedRetryOnRefuse && !process.env.BARNOWL_SEED_RETRY_ON_REFUSAL) {
+    process.env.BARNOWL_SEED_RETRY_ON_REFUSAL = "1";
+  }
+  if (out.messages.seedMaxRetry && !process.env.BARNOWL_SEED_MAX_RETRY) {
+    process.env.BARNOWL_SEED_MAX_RETRY = String(out.messages.seedMaxRetry);
   }
   return out;
 }
