@@ -1,0 +1,7 @@
+{
+  "name": "barnowl",
+  "version": "0.1.0",
+  "description": "ローカル OpenAI 互換 Claude/Codex サーバー barnowl を操作（start/stop/status, creds, beacon, messages.oauth/log/capture/rewrite）",
+  "author": { "name": "hiroto" },
+  "keywords": ["barnowl", "claude", "codex", "openai-compatible", "proxy", "local"]
+}
