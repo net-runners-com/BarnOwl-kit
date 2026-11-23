@@ -96,6 +96,8 @@ function parseFlags(argv) {
     //   --allow-tools "Bash Read" or --allow-tools Bash,Read
     // Default kill-list stays applied; only names given here are subtracted.
     else if (a === "--allow-tools") flags.allowTools = argv[++i];
+    // Engine: "http" (default — /v1/messages over HTTP) or "cli" (spawn claude -p).
+    else if (a === "--engine") flags.engine = argv[++i];
   }
 
   const file = loadConfigFile(configPath);
@@ -111,6 +113,7 @@ function parseFlags(argv) {
     apiKey: process.env.BARNOWL_API_KEY,
     autoUpdate: process.env.BARNOWL_AUTO_UPDATE,
     allowTools: process.env.BARNOWL_ALLOW_TOOLS,
+    engine: process.env.BARNOWL_ENGINE,
   };
 
   const pick = (key) => {
@@ -133,6 +136,7 @@ function parseFlags(argv) {
     apiKey: pick("apiKey"),
     autoUpdate: !["0", "false", "no", "off"].includes(String(pick("autoUpdate")).toLowerCase()),
     allowTools: pick("allowTools"),
+    engine: String(pick("engine") || "http").toLowerCase() === "cli" ? "cli" : "http",
     configFile: file ? file.path : null,
   };
   // "mcp": false / "none" in the file explicitly disables MCP even if env sets it
@@ -411,6 +415,24 @@ async function cmdStart(argv) {
   if (cfg.allowTools) {
     process.env.BARNOWL_ALLOW_TOOLS = cfg.allowTools;
     console.log(`  Native tools allowed: ${cfg.allowTools} (default is none)`);
+  }
+
+  // Engine: the HTTP engine (lib/http-engine.cjs) answers every otterly route
+  // through this server's own /v1/messages — OAuth, identity block, refresh,
+  // seed, rewrite/block and the wire log all apply. "cli" keeps `claude -p`.
+  process.env.BARNOWL_SELF_URL = `http://127.0.0.1:${cfg.port}`;
+  process.env.BARNOWL_ENGINE = cfg.engine;
+  const httpEngine = require("../lib/http-engine.cjs");
+  if (httpEngine.httpActive()) {
+    console.log(`  Engine   : http → ${process.env.BARNOWL_SELF_URL}/v1/messages (no claude process per request)`);
+    try {
+      const n = require("../lib/http-sessions.cjs").sweep();
+      if (n) console.log(`  Sessions : removed ${n} record(s) older than 7 days`);
+    } catch (_) { /* sweep is best-effort */ }
+  } else if (cfg.engine === "cli") {
+    console.log("  Engine   : cli (claude -p per request)");
+  } else {
+    console.log("  Engine   : cli — the http engine needs messages.oauth or ANTHROPIC_API_KEY");
   }
 
   const existing = readPid();
@@ -776,7 +798,7 @@ function cmdHelp() {
   barnowl v${PKG.version} — fast OpenAI-compatible local Claude server
 
   Usage:
-    barnowl start [-p <port>] [-d <dir>] [--mcp <profile>] [--allow-tools <names>]
+    barnowl start [-p <port>] [-d <dir>] [--mcp <profile>] [--allow-tools <names>] [--engine http|cli]
                   [--config <file>] [--no-update]
     barnowl stop  [-p <port>]              Stop the server
     barnowl restart                        Restart

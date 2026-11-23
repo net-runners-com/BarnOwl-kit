@@ -232,6 +232,28 @@ curl http://localhost:11435/v1/images/generations -H "Content-Type: application/
 `--model`/`--quality` 対応・汎用プロンプトテンプレート・高速起動フラグを
 加えています。
 
+## エンジン（HTTP / CLI）
+
+既定は **HTTP エンジン**。`/v1/chat/completions`・Ollama 互換・native・WebSocket の各ルートは
+`claude -p` を起動せず、barnowl 自身の `/v1/messages`（`messages.oauth` の OAuth 経路）に
+HTTP で送ります。Claude Code の system prompt とツール定義（"say hi" で約 12k トークン）が
+乗らず、ストリーミングも本物のトークン単位になります。
+
+`claude -p` に頼っていた機能は barnowl 側で持ちます:
+
+| 機能 | HTTP エンジンでの実装 |
+| --- | --- |
+| `session_id` / `X-Session-Id` | `~/.barnowl/sessions/<id>.json` に履歴を保存（7 日で削除）。tools・画像付きでも使える |
+| OpenAI `tools` | Messages API のネイティブ `tools` に変換し、`tool_use` を `tool_calls` で返す |
+| MCP（`--mcp`） | barnowl 内蔵の MCP クライアント（stdio / Streamable HTTP） |
+| `--allow-tools Bash` | barnowl が `/bin/bash -c` で実行（Bash 以外は未対応） |
+| seal の許可判定 | ツール実行前に毎回 `canUseTool` を通す（判定不能なら拒否） |
+| effort | `output_config.effort` + adaptive thinking（`xhigh`/`ultra`→`max`、`minimal`→`low`） |
+
+条件: `messages.oauth: true` か `ANTHROPIC_API_KEY`。満たさなければ起動時に CLI エンジンへ戻ります。
+旧挙動に戻すには `barnowl start --engine cli`、設定ファイルの `"engine": "cli"`、または
+`BARNOWL_ENGINE=cli`。既存の `claude --resume` 用セッション ID は引き継がれません（未知の ID は空履歴で開始）。
+
 ## セッション（会話の継続）
 
 リクエストはデフォルトでステートレスです — 毎回新しい会話として処理されます。

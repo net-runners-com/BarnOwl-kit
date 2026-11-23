@@ -239,6 +239,28 @@ Generation is routed through a vendored copy of
 MIT) with barnowl extensions: `--model`/`--quality` passthrough, a
 general-purpose prompt template, and clean codex flags.
 
+## Engine (HTTP / CLI)
+
+The default is the **HTTP engine**: `/v1/chat/completions`, the Ollama, native and WebSocket
+routes no longer spawn `claude -p`; they send to barnowl's own `/v1/messages` (the
+`messages.oauth` path) over HTTP. No Claude Code system prompt / tool catalog rides along
+("say hi" used to cost ~12k input tokens), and streaming is real token-by-token.
+
+What `claude -p` used to provide now lives in barnowl:
+
+| Feature | HTTP engine |
+| --- | --- |
+| `session_id` / `X-Session-Id` | history in `~/.barnowl/sessions/<id>.json` (7-day expiry); works with tools and images too |
+| OpenAI `tools` | native Messages `tools`; `tool_use` comes back as `tool_calls` |
+| MCP (`--mcp`) | built-in MCP client (stdio / Streamable HTTP) |
+| `--allow-tools Bash` | barnowl runs `/bin/bash -c` itself (only Bash is supported) |
+| seal permission check | `canUseTool` runs before every tool call (fails closed) |
+| effort | `output_config.effort` + adaptive thinking (`xhigh`/`ultra`→`max`, `minimal`→`low`) |
+
+Needs `messages.oauth: true` or `ANTHROPIC_API_KEY`; otherwise start falls back to the CLI engine.
+Back to the old path: `barnowl start --engine cli`, `"engine": "cli"` in the config file, or
+`BARNOWL_ENGINE=cli`. Session ids from `claude --resume` are not migrated (unknown ids start empty).
+
 ## Sessions (conversation continuity)
 
 Requests are stateless by default — each one starts a fresh conversation.

@@ -124,3 +124,55 @@ test("models.js serves the catalog in place", async () => {
   const { MODELS } = await load("server/models.js");
   assert.deepEqual(MODELS.map((x) => x.id), ["sonnet"]);
 });
+
+test("http engine patches are in place", () => {
+  const e = read("engine.js");
+  assert.ok(e.includes("barnowl: http engine"));
+  assert.ok(e.includes("__barnowlHttp.httpActive()"));
+  assert.ok(e.includes("queryOptions.anthropic = opts.anthropic;"));
+  const r = read("server/routes-openai.js");
+  for (const m of ["barnowl: http route", "barnowl: http sessions on every turn", "!options.anthropic && __barnowlWarm",
+    "barnowl: http function calling", "barnowl: http tool session id"]) assert.ok(r.includes(m), m);
+  assert.ok(r.includes("if (wantsTools && !options.anthropic) {"));
+});
+
+test("ClaudeEngine.run goes over HTTP to BARNOWL_SELF_URL (no claude spawn)", async () => {
+  const http = require("http");
+  const seen = [];
+  const server = http.createServer((req, res) => {
+    let raw = "";
+    req.on("data", (c) => (raw += c));
+    req.on("end", () => {
+      seen.push({ url: req.url, body: JSON.parse(raw) });
+      res.writeHead(200, { "content-type": "text/event-stream" });
+      const ev = [
+        { type: "message_start", message: { usage: { input_tokens: 3 } } },
+        { type: "content_block_start", index: 0, content_block: { type: "text", text: "" } },
+        { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "pong" } },
+        { type: "content_block_stop", index: 0 },
+        { type: "message_delta", delta: { stop_reason: "end_turn" }, usage: { output_tokens: 1 } },
+      ];
+      res.end(ev.map((d) => `event: ${d.type}\ndata: ${JSON.stringify(d)}\n\n`).join(""));
+    });
+  });
+  await new Promise((r) => server.listen(0, "127.0.0.1", r));
+  const saved = { ...process.env };
+  process.env.BARNOWL_SELF_URL = `http://127.0.0.1:${server.address().port}`;
+  process.env.BARNOWL_MESSAGES_OAUTH = "1";
+  process.env.BARNOWL_CLAUDE_BIN = "/nonexistent/claude";
+  process.env.BARNOWL_SESSIONS_DIR = fs.mkdtempSync(path.join(os.tmpdir(), "bo-pt-"));
+  delete process.env.BARNOWL_ENGINE;
+  try {
+    const { ClaudeEngine } = await load("engine.js");
+    const r = await new ClaudeEngine().run("ping", { model: "haiku" });
+    assert.equal(r.text, "pong");
+    assert.ok(r.sessionId);
+    assert.equal(seen[0].url, "/v1/messages");
+    assert.match(seen[0].body.model, /^claude-haiku-/);
+  } finally {
+    for (const k of ["BARNOWL_SELF_URL", "BARNOWL_MESSAGES_OAUTH", "BARNOWL_CLAUDE_BIN", "BARNOWL_SESSIONS_DIR"]) {
+      if (saved[k] === undefined) delete process.env[k]; else process.env[k] = saved[k];
+    }
+    await new Promise((r) => server.close(r));
+  }
+});
